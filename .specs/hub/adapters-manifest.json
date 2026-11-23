@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "canonicalHash": "efc258ff996101a399c1034dbc9cf5e3d52dc9b5c6c5a9c6cff3b0facc96711b",
+  "updatedAt": "2026-11-23T21:53:26.795Z",
+  "files": {
+    ".gemini/rules/harness.md": {
+      "platform": "antigravity",
+      "sha256": "6e2fbaf3bad5e5b131150aead2fd1ca11f09b41061d60b71a43658a79fb09bb9",
+      "canonicalHash": "efc258ff996101a399c1034dbc9cf5e3d52dc9b5c6c5a9c6cff3b0facc96711b",
+      "ruleCount": 12,
+      "promptAmplifierIncluded": true,
+      "syncedAt": "2026-11-23T21:53:26.795Z"
+    },
+    ".agents/rules/harness.md": {
+      "platform": "codex",
+      "sha256": "8445e0793ec1d81787816f2b2aa71985dd4efc0e82f17de3e5981349d24795e3",
+      "canonicalHash": "efc258ff996101a399c1034dbc9cf5e3d52dc9b5c6c5a9c6cff3b0facc96711b",
+      "ruleCount": 12,
+      "promptAmplifierIncluded": true,
+      "syncedAt": "2026-11-23T21:53:26.795Z"
+    },
+    ".cursor/rules/harness.mdc": {
+      "platform": "cursor",
+      "sha256": "e586eac0abaa3be4cfff1ade7088ef77e9615ed653e2b675b99f05cd6d67ac18",
+      "canonicalHash": "efc258ff996101a399c1034dbc9cf5e3d52dc9b5c6c5a9c6cff3b0facc96711b",
+      "ruleCount": 12,
+      "promptAmplifierIncluded": true,
+      "syncedAt": "2026-11-23T21:53:26.795Z"
+    }
+  }
+}

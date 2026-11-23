@@ -58,6 +58,37 @@ Cada projeto declara o tipo e os comandos de prova na seção `## Verification` 
 
 Copia `.claude/` (regras, agentes, skills, templates, hooks), `AGENTS.md`, `CLAUDE.md` (se não existir) e cria `.specs/`. Rodar de novo atualiza o harness sem tocar em `CLAUDE.md`, `AGENTS.md` e `settings.json` existentes (use `-Force` / `--force` para sobrescrever). Depois: abra o projeto no Claude Code e escreva o que você quer. Código existente é mapeado na primeira tarefa, sem perguntas.
 
+## Harness Hub (Painel Visual + Multi-AI)
+
+Painel web local (Node 24, zero dependências, `127.0.0.1:7331`) que opera diretamente sobre `.specs/tasks/` e `.specs/hub/board.json`, com sincronização de regras para **Claude**, **Antigravity**, **Codex** e **Cursor**.
+
+```powershell
+# Subir o painel visual interativo (http://127.0.0.1:7331)
+node scripts/hub.mjs serve
+
+# Sincronizar / verificar paridade das regras Multi-AI (inclui Prompt Amplifier de 4 partes)
+node scripts/sync-adapters.mjs
+node scripts/sync-adapters.mjs --check
+
+# Fila de demanda via CLI (qualquer IA/agente)
+node scripts/hub.mjs queue
+```
+
+### Mapa de Documentação (Fonte Única de Verdade)
+
+| Documento | O que define |
+|-----------|--------------|
+| [Brief Amplificado](.specs/docs/amplified-brief-harness-hub.md) | Análise em 4 passos + prompt reescrito |
+| [Pesquisa `devworks-harness`](.specs/docs/research-devworks-harness.md) | Análise comparativa do código-fonte de referência |
+| [PRD & HUs (MVP)](.specs/docs/prd-harness-hub.md) | 16 HUs, ACs testáveis, corte MoSCoW e regras de negócio |
+| [Spec Arquitetural](.specs/docs/spec-harness-hub.md) | Arquitetura, API HTTP/SSE, CLI, locks e fatiamento S1–S5 |
+| [Decisões (ADRs)](context/DECISIONS.md) | ADRs 001–006 (Node zero-dep, persistência dual, segurança, Multi-AI) |
+| [Design System](context/DESIGN.md) | Tokens Dark/Light (WCAG AA), tipografia, componentes e SVGs |
+| [Spec de Telas & Fluxos](.specs/docs/design-harness-hub.md) | Dois Quadros (`Planejamento` × `Execução`), GitHub Inbox e Console ao Vivo |
+| [Template de HU](.specs/templates/hu.md) | Modelo reutilizável para novas Histórias de Usuário |
+| [Roadmap Fase 2](.specs/docs/roadmap-harness-hub-v2.md) | Workspaces isolados, Parecer do Dia, MCPs, Chat e Failover 429 |
+| [Auditoria do Harness](.specs/docs/audit-harness-execution.md) | Diagnóstico de execução, orçamento e plano de lapidação |
+
 ## Estrutura
 
 ```text

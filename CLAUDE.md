@@ -64,7 +64,7 @@ Delivered means: validator and selftest pass, and both installers produce a copy
 
 ## Context index
 <!-- list of context/*.md files that exist in this project -->
-None — this repo has no application code.
+context/DECISIONS.md · context/DESIGN.md
 
 ## Lessons learned
 <!-- appended by /lessons-writer -->
