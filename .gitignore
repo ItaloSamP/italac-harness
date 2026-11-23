@@ -5,3 +5,4 @@ node_modules/
 .env.*
 .claude/settings.local.json
 .taste-skill/
+.specs/hub/private-calendar.json

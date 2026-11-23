@@ -9,6 +9,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAdaptersStatus, syncAdapters } from './lib/adapters.mjs';
+import { createCalendarStore, validateEventId } from './lib/calendar.mjs';
 import { fetchAssignedIssues, mapIssueToTaskInput } from './lib/github.mjs';
 import { createRunner } from './lib/runner.mjs';
 import { createSseHub } from './lib/sse.mjs';
@@ -217,6 +218,7 @@ export function createServer(options = {}) {
   const githubToken = options.githubToken;
 
   const store = createStore(rootDir);
+  const calendar = createCalendarStore(rootDir);
   const sse = createSseHub({ heartbeatMs: options.heartbeatMs });
 
   let watcher = null;
@@ -988,6 +990,137 @@ export function createServer(options = {}) {
         return;
       }
 
+      // ---- Private Calendar & Planner ----
+      if (method === 'GET' && pathname === '/api/calendar') {
+        const workspace = parsedUrl.searchParams.get('workspace') || undefined;
+        const month = parsedUrl.searchParams.get('month') || undefined;
+        const from = parsedUrl.searchParams.get('from') || undefined;
+        const to = parsedUrl.searchParams.get('to') || undefined;
+        const today = parsedUrl.searchParams.get('today') || undefined;
+        const result = calendar.listEvents({ workspace, month, from, to, today });
+        sendJson(res, 200, { ok: true, ...result });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/calendar') {
+        const body = await readJsonBody(req);
+        const event = calendar.createEvent(body);
+        sse.broadcast('calendar:updated', {
+          reason: 'event_created',
+          eventId: event.id,
+          event,
+        });
+        sendJson(res, 201, { ok: true, event });
+        return;
+      }
+
+      const calendarMatch = pathname.match(/^\/api\/calendar\/([^/]+)(?:\/(promote))?$/);
+      if (calendarMatch) {
+        const eventId = calendarMatch[1];
+        const action = calendarMatch[2] || null;
+        validateEventId(eventId);
+
+        if (!action && method === 'PATCH') {
+          const body = await readJsonBody(req);
+          const event = calendar.updateEvent(eventId, body);
+          sse.broadcast('calendar:updated', {
+            reason: 'event_updated',
+            eventId: event.id,
+            event,
+          });
+          sendJson(res, 200, { ok: true, event });
+          return;
+        }
+
+        if (!action && method === 'DELETE') {
+          const result = calendar.deleteEvent(eventId);
+          sse.broadcast('calendar:updated', {
+            reason: 'event_deleted',
+            eventId,
+          });
+          sendJson(res, 200, { ok: true, ...result });
+          return;
+        }
+
+        if (action === 'promote' && method === 'POST') {
+          const body = await readJsonBody(req);
+          const existing = calendar.getEvent(eventId);
+          if (!existing) {
+            throw new StoreError('NOT_FOUND', `Evento não encontrado: ${eventId}`, 404);
+          }
+          if (existing.linkedTaskId && store.getTask(existing.linkedTaskId)) {
+            throw new StoreError(
+              'ALREADY_PROMOTED',
+              `Evento já promovido para a tarefa ${existing.linkedTaskId}`,
+              409,
+              { taskId: existing.linkedTaskId },
+            );
+          }
+
+          const timeLabel = existing.startTime
+            ? `${existing.startTime}${existing.endTime ? `-${existing.endTime}` : ''}`
+            : '';
+          const problemParts = [];
+          if (existing.notes) problemParts.push(existing.notes);
+          if (existing.subject) problemParts.push(`Matéria/Projeto: ${existing.subject}`);
+          problemParts.push(
+            `Calendário privado (${existing.workspace}/${existing.kind}) — ${existing.date}${timeLabel ? ` ${timeLabel}` : ''}`,
+          );
+
+          const taskTitle =
+            typeof body.title === 'string' && body.title.trim() ? body.title.trim() : existing.title;
+          const taskProblem =
+            typeof body.problem === 'string' && body.problem.trim()
+              ? body.problem.trim()
+              : problemParts.join('\n');
+
+          const created = store.createTask({
+            title: taskTitle,
+            problem: taskProblem,
+            boardLane: body.boardLane || 'scheduled',
+            priority:
+              body.priority ||
+              (existing.kind === 'deadline' || existing.kind === 'delivery' ? 'P1' : 'P2'),
+            tier: body.tier || 'T2',
+            type: body.type || 'Feature',
+            assignee: body.assignee || '@developer',
+            reviewer: body.reviewer || '@code-reviewer',
+            source: `Calendário privado (${existing.workspace}/${existing.kind}) — ${existing.date}`,
+            acceptanceCriteria:
+              Array.isArray(body.acceptanceCriteria) && body.acceptanceCriteria.length > 0
+                ? body.acceptanceCriteria
+                : [`Entrega "${taskTitle}" concluída até ${existing.date} com evidência verificada`],
+            quickCreate: true,
+            schedule: {
+              date: existing.date,
+              startTime: existing.startTime,
+              endTime: existing.endTime,
+              workspace: existing.workspace,
+              calendarEventId: existing.id,
+            },
+            actor: body.actor || 'user',
+          });
+
+          const updatedEvent = calendar.updateEvent(eventId, { linkedTaskId: created.id });
+          const task = enrichTask(created);
+
+          sse.broadcast('state:changed', {
+            reason: 'calendar_promoted',
+            taskId: task.id,
+            eventId: updatedEvent.id,
+          });
+          sse.broadcast('calendar:updated', {
+            reason: 'event_promoted',
+            eventId: updatedEvent.id,
+            taskId: task.id,
+            event: updatedEvent,
+          });
+
+          sendJson(res, 201, { ok: true, event: updatedEvent, task });
+          return;
+        }
+      }
+
       // ---- Config ----
       if (method === 'PATCH' && pathname === '/api/config') {
         const body = await readJsonBody(req);
@@ -1120,6 +1253,7 @@ export function createServer(options = {}) {
       return `http://${ALLOWED_HOST}:${boundPort}`;
     },
     store,
+    calendar,
     runner,
     sse,
   };

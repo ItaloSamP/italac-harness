@@ -12,6 +12,7 @@ import {
   isTransitionAllowed,
   formatElapsed,
   getTodayIso,
+  toIsoDate,
   renderMissionControl,
   renderKanban,
   renderGithubInbox,
@@ -19,6 +20,8 @@ import {
   renderScheduleView,
   renderAgentsView,
   renderAdaptersView,
+  renderCalendarView,
+  renderCalendarEventModal,
   renderExecConsole,
   renderTaskDrawer,
   renderNewTaskModal,
@@ -41,6 +44,7 @@ const VIEW_TITLES = {
   schedule: 'Agenda Semanal',
   agents: 'Agentes & Incidentes',
   adapters: 'Hub Multi-AI',
+  calendar: 'Calendário & Rotina',
 };
 
 const state = {
@@ -70,6 +74,18 @@ const ui = {
   queueTypeFilter: 'all',
   scheduleWeekOffset: 0,
   scheduleSearch: '',
+  calendar: {
+    loading: false,
+    loaded: false,
+    error: null,
+    events: [],
+    summary: { total: 0, upcomingDeadlines: 0, todayCount: 0, studyHoursWeek: 0 },
+    isGitignored: true,
+    viewMode: loadPref('harness-hub-calendar-mode', 'month'),
+    workspace: 'all',
+    month: getTodayIso().slice(0, 7),
+    selectedDate: getTodayIso(),
+  },
   github: { loading: false, mode: 'demo', issues: [], error: null, hint: '', loaded: false },
   ghFilterSearch: '',
   ghFilterKind: 'all',
@@ -151,6 +167,7 @@ const el = {
   navBadgeSchedule: document.getElementById('nav-badge-schedule'),
   navBadgeAgents: document.getElementById('nav-badge-agents'),
   navBadgeAdapters: document.getElementById('nav-badge-adapters'),
+  navBadgeCalendar: document.getElementById('nav-badge-calendar'),
 };
 
 /* ==========================================================================
@@ -241,6 +258,13 @@ function updateChrome() {
   el.navBadgeGithub.textContent = ghLen;
   el.topbarGhCount.textContent = ghLen;
 
+  if (el.navBadgeCalendar) {
+    const calToday = ui.calendar.loaded
+      ? String(ui.calendar.summary?.todayCount ?? 0)
+      : '0';
+    el.navBadgeCalendar.textContent = calToday;
+  }
+
   // Auto-run switch
   const autoRun = Boolean(state.config?.autoRunOnInProgress);
   el.sidebarAutoRun.classList.toggle('is-checked', autoRun);
@@ -306,6 +330,9 @@ function renderView() {
       break;
     case 'adapters':
       el.main.innerHTML = renderAdaptersView(state, ui);
+      break;
+    case 'calendar':
+      el.main.innerHTML = renderCalendarView(state, ui);
       break;
     default:
       el.main.innerHTML = renderMissionControl(state, ui);
@@ -525,6 +552,64 @@ async function loadGithubIssues() {
   if (ui.view === 'github' || ui.githubDrawerOpen) renderView();
 }
 
+async function loadCalendar({ silent = false } = {}) {
+  if (!silent) {
+    ui.calendar.loading = true;
+    ui.calendar.error = null;
+    if (ui.view === 'calendar') renderView();
+  }
+  try {
+    const res = await api.getCalendar({
+      workspace: ui.calendar.workspace === 'all' ? '' : ui.calendar.workspace,
+    });
+    ui.calendar.loading = false;
+    ui.calendar.loaded = true;
+    ui.calendar.error = null;
+    ui.calendar.events = Array.isArray(res?.events) ? res.events : [];
+    ui.calendar.summary = res?.summary || {
+      total: ui.calendar.events.length,
+      upcomingDeadlines: 0,
+      todayCount: 0,
+      studyHoursWeek: 0,
+    };
+    ui.calendar.isGitignored = res?.isGitignored !== false;
+  } catch (err) {
+    ui.calendar.loading = false;
+    ui.calendar.error = err.message;
+    if (!silent) {
+      showToast('Erro ao carregar Calendário Privado', err.message, { type: 'error' });
+    }
+  }
+  updateChrome();
+  if (ui.view === 'calendar') renderView();
+}
+
+function shiftCalendarPeriod(delta) {
+  const todayIso = getTodayIso();
+  if (delta === 0) {
+    ui.calendar.selectedDate = todayIso;
+    ui.calendar.month = todayIso.slice(0, 7);
+    renderView();
+    return;
+  }
+  if (ui.calendar.viewMode === 'week') {
+    const parts = (ui.calendar.selectedDate || todayIso).split('-').map(Number);
+    const dt = new Date(parts[0], parts[1] - 1, parts[2] + delta * 7);
+    const nextIso = toIsoDate(dt);
+    ui.calendar.selectedDate = nextIso;
+    ui.calendar.month = nextIso.slice(0, 7);
+  } else {
+    const [y, m] = (ui.calendar.month || todayIso.slice(0, 7)).split('-').map(Number);
+    const dt = new Date(y, m - 1 + delta, 1);
+    const nextYm = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+    ui.calendar.month = nextYm;
+    if (!ui.calendar.selectedDate.startsWith(nextYm)) {
+      ui.calendar.selectedDate = nextYm === todayIso.slice(0, 7) ? todayIso : `${nextYm}-01`;
+    }
+  }
+  renderView();
+}
+
 /* ==========================================================================
    Actions (Tasks, Move, Run, GitHub, Gates, Adapters)
    ========================================================================== */
@@ -535,6 +620,9 @@ function navigate(view) {
   setMobileSidebar(false);
   if (view === 'github' && !ui.github.loaded) {
     loadGithubIssues();
+  }
+  if (view === 'calendar' && !ui.calendar.loaded) {
+    loadCalendar();
   }
   renderView();
 }
@@ -753,6 +841,10 @@ sse.on('gate:updated', () => {
 
 sse.on('adapter:updated', () => {
   scheduleRefresh();
+});
+
+sse.on('calendar:updated', () => {
+  loadCalendar({ silent: true });
 });
 
 sse.on('watcher:error', (payload) => {
@@ -1237,6 +1329,57 @@ document.addEventListener('click', async (e) => {
         closeModal();
         await fetchState({ silent: true });
         break;
+      case 'cal-set-workspace':
+        ui.calendar.workspace = actionEl.getAttribute('data-workspace') || 'all';
+        await loadCalendar();
+        break;
+      case 'cal-nav-period':
+        shiftCalendarPeriod(Number(actionEl.getAttribute('data-delta') || 0));
+        break;
+      case 'cal-set-mode':
+        ui.calendar.viewMode = actionEl.getAttribute('data-mode') === 'week' ? 'week' : 'month';
+        savePref('harness-hub-calendar-mode', ui.calendar.viewMode);
+        renderView();
+        break;
+      case 'cal-select-day': {
+        const iso = actionEl.getAttribute('data-date');
+        if (iso) {
+          ui.calendar.selectedDate = iso;
+          ui.calendar.month = iso.slice(0, 7);
+          renderView();
+        }
+        break;
+      }
+      case 'cal-open-new-modal':
+        openModal(renderCalendarEventModal(ui));
+        break;
+      case 'cal-reload':
+        await loadCalendar();
+        break;
+      case 'cal-promote': {
+        const calId = actionEl.getAttribute('data-cal-id');
+        if (!calId) break;
+        try {
+          const res = await api.promoteCalendarEvent(calId, { boardLane: 'scheduled' });
+          showToast('Enviado para o Kanban', res?.task?.title || 'Tarefa criada em Agendado.', { type: 'success' });
+          await Promise.all([loadCalendar({ silent: true }), fetchState({ silent: true })]);
+        } catch (err) {
+          showToast('Erro ao enviar para o Kanban', err.message, { type: 'error', persistent: true });
+        }
+        break;
+      }
+      case 'cal-delete': {
+        const calId = actionEl.getAttribute('data-cal-id');
+        if (!calId) break;
+        try {
+          await api.deleteCalendarEvent(calId);
+          showToast('Item removido', 'Compromisso excluído do calendário privado.', { type: 'info' });
+          await loadCalendar({ silent: true });
+        } catch (err) {
+          showToast('Erro ao excluir item', err.message, { type: 'error' });
+        }
+        break;
+      }
     }
     return;
   }
@@ -1323,6 +1466,21 @@ document.addEventListener('change', async (e) => {
       await fetchState({ silent: true });
     } catch (err) {
       showToast('Erro ao atualizar agenda', err.message, { type: 'error' });
+    }
+    return;
+  }
+
+  // Calendar event done toggle
+  if (e.target.hasAttribute('data-cal-toggle-done')) {
+    const calId = e.target.getAttribute('data-cal-id');
+    if (!calId) return;
+    const checked = e.target.checked;
+    try {
+      await api.updateCalendarEvent(calId, { status: checked ? 'done' : 'open' });
+      await loadCalendar({ silent: true });
+    } catch (err) {
+      e.target.checked = !checked;
+      showToast('Erro ao atualizar status', err.message, { type: 'error' });
     }
     return;
   }
@@ -1514,6 +1672,40 @@ document.addEventListener('submit', async (e) => {
     } catch (err) {
       showToast('Erro ao atribuir agente', err.message, { type: 'error' });
     }
+    return;
+  }
+
+  if (e.target.id === 'form-cal-quick-add' || e.target.id === 'form-cal-modal-add') {
+    e.preventDefault();
+    const isModal = e.target.id === 'form-cal-modal-add';
+    const fd = new FormData(e.target);
+    const title = String(fd.get('title') || '').trim();
+    const date = isModal
+      ? String(fd.get('date') || ui.calendar.selectedDate || getTodayIso())
+      : String(e.target.getAttribute('data-cal-date') || ui.calendar.selectedDate || getTodayIso());
+    if (!title) {
+      showToast('Título obrigatório', 'Informe um título para o item.', { type: 'warn' });
+      return;
+    }
+    try {
+      await api.createCalendarEvent({
+        title,
+        date,
+        startTime: String(fd.get('startTime') || '').trim(),
+        endTime: String(fd.get('endTime') || '').trim(),
+        workspace: String(fd.get('workspace') || 'personal'),
+        kind: String(fd.get('kind') || 'plan'),
+        subject: String(fd.get('subject') || '').trim(),
+        notes: String(fd.get('notes') || '').trim(),
+      });
+      ui.calendar.selectedDate = date;
+      ui.calendar.month = date.slice(0, 7);
+      if (isModal) closeModal();
+      showToast('Item adicionado', `${title} (${date})`, { type: 'success' });
+      await loadCalendar({ silent: true });
+    } catch (err) {
+      showToast('Erro ao salvar item', err.message, { type: 'error', persistent: true });
+    }
   }
 });
 
@@ -1530,6 +1722,9 @@ function executePaletteCommand(cmdId) {
     openTaskDrawer(cmdId.slice(5));
   } else if (cmdId === 'act:new-task') {
     openModal(renderNewTaskModal(state));
+  } else if (cmdId === 'act:new-calendar-event') {
+    navigate('calendar');
+    openModal(renderCalendarEventModal(ui));
   } else if (cmdId === 'act:run-gates') {
     handleRunGates(null);
   } else if (cmdId === 'act:sync-adapters') {
@@ -1658,5 +1853,6 @@ applySidebarState();
 renderConsole();
 sse.connect();
 fetchState();
-// Background preload GitHub Inbox count
+// Background preload GitHub Inbox count & Private Calendar badge
 loadGithubIssues();
+loadCalendar({ silent: true });

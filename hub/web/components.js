@@ -64,6 +64,16 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   maximize: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>',
   spinner: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+  briefcase: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+  'book-open': '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
+  user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
+  'arrow-up-right': '<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+  bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
 };
 
 export function icon(name, size = 16, extraClass = '') {
@@ -2579,10 +2589,12 @@ export function renderCommandPalette(state, ui) {
     { id: 'nav:schedule', group: 'Navegar', label: 'Agenda Semanal', hint: 'Seg–Dom' },
     { id: 'nav:agents', group: 'Navegar', label: 'Agentes & Incidentes', hint: '14 agentes' },
     { id: 'nav:adapters', group: 'Navegar', label: 'Hub Multi-AI', hint: 'Paridade & Prompt Amplifier' },
+    { id: 'nav:calendar', group: 'Privado', label: 'Calendário & Rotina', hint: 'Local · fora do Git', searchText: 'privado calendario rotina faculdade pessoal prazos estudo' },
   ];
 
   const actions = [
     { id: 'act:new-task', group: 'Ações rápidas', label: 'Nova tarefa', hint: 'N' },
+    { id: 'act:new-calendar-event', group: 'Privado', label: 'Novo item no Calendário & Rotina', hint: 'Calendário', searchText: 'novo evento prazo estudo rotina privado' },
     { id: 'act:run-gates', group: 'Ações rápidas', label: 'Rodar todos os Gates', hint: 'gate.mjs' },
     { id: 'act:sync-adapters', group: 'Ações rápidas', label: 'Sincronizar todas as IAs', hint: 'Multi-AI' },
     { id: 'act:toggle-autorun', group: 'Ações rápidas', label: 'Alternar Auto-executar', hint: state.config?.autoRunOnInProgress ? 'ON' : 'OFF' },
@@ -2646,5 +2658,585 @@ export function renderCommandPalette(state, ui) {
               .join('')
       }
     </div>
+  `;
+}
+
+
+/* ==========================================================================
+   View 8: Privado — Calendário & Rotina
+   ========================================================================== */
+
+export const CALENDAR_WORKSPACES = [
+  { id: 'all', label: 'Todos', iconName: 'sliders' },
+  { id: 'work', label: 'Trabalho', iconName: 'briefcase' },
+  { id: 'study', label: 'Faculdade', iconName: 'book-open' },
+  { id: 'personal', label: 'Pessoal', iconName: 'user' },
+];
+
+export const CALENDAR_KINDS = [
+  { id: 'deadline', label: 'Prazo', iconName: 'flag' },
+  { id: 'study', label: 'Estudo', iconName: 'book-open' },
+  { id: 'delivery', label: 'Entrega', iconName: 'check-circle' },
+  { id: 'plan', label: 'Plano', iconName: 'file-text' },
+  { id: 'reminder', label: 'Lembrete', iconName: 'bell' },
+];
+
+const PT_MONTHS = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+];
+
+const PT_WEEKDAYS_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const PT_WEEKDAYS_LONG = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+
+function parseIsoDateLocal(iso) {
+  const parts = String(iso || '').split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return new Date();
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function addDaysIso(iso, delta) {
+  const dt = parseIsoDateLocal(iso);
+  dt.setDate(dt.getDate() + delta);
+  return toIsoDate(dt);
+}
+
+function formatMonthTitle(ym) {
+  const [y, m] = String(ym || getTodayIso().slice(0, 7)).split('-').map(Number);
+  if (!y || !m || m < 1 || m > 12) return ym || '';
+  return `${PT_MONTHS[m - 1]} ${y}`;
+}
+
+function formatFullDatePt(iso) {
+  const dt = parseIsoDateLocal(iso);
+  const wd = PT_WEEKDAYS_LONG[dt.getDay()] || '';
+  const day = dt.getDate();
+  const mon = PT_MONTHS[dt.getMonth()] || '';
+  return `${wd}, ${day} de ${mon}`;
+}
+
+function formatRelativeDateChip(iso, todayIso) {
+  if (iso === todayIso) return 'Hoje';
+  if (iso === addDaysIso(todayIso, 1)) return 'Amanhã';
+  const parts = String(iso || '').split('-');
+  if (parts.length === 3) return `${parts[2]}/${parts[1]}`;
+  return iso || '';
+}
+
+function getWorkspaceMeta(ws) {
+  return CALENDAR_WORKSPACES.find((w) => w.id === ws) || { id: 'personal', label: 'Pessoal', iconName: 'user' };
+}
+
+function getKindMeta(kind) {
+  return CALENDAR_KINDS.find((k) => k.id === kind) || { id: 'plan', label: 'Plano', iconName: 'file-text' };
+}
+
+function formatTimeRange(startTime, endTime) {
+  const s = String(startTime || '').trim();
+  const e = String(endTime || '').trim();
+  if (s && e) return `${s}–${e}`;
+  if (s) return s;
+  return 'Dia todo';
+}
+
+function sortCalendarEvents(list) {
+  return [...(list || [])].sort((a, b) => {
+    const da = String(a.date || '');
+    const db = String(b.date || '');
+    if (da !== db) return da.localeCompare(db);
+    const ta = String(a.startTime || '99:99');
+    const tb = String(b.startTime || '99:99');
+    if (ta !== tb) return ta.localeCompare(tb);
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+}
+
+function buildMonthGrid(ym, todayIso, selectedDate) {
+  const [year, month] = String(ym || todayIso.slice(0, 7)).split('-').map(Number);
+  const firstOfMonth = new Date(year, month - 1, 1);
+  const startDow = firstOfMonth.getDay(); // 0=Dom..6=Sáb
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
+
+  const cells = [];
+  for (let i = 0; i < totalCells; i++) {
+    const dt = new Date(year, month - 1, 1 - startDow + i);
+    const iso = toIsoDate(dt);
+    cells.push({
+      iso,
+      dayNum: dt.getDate(),
+      inCurrentMonth: dt.getMonth() === month - 1,
+      isToday: iso === todayIso,
+      isSelected: iso === selectedDate,
+    });
+  }
+  return cells;
+}
+
+function buildWeekDaysSunSat(anchorIso, todayIso, selectedDate) {
+  const anchor = parseIsoDateLocal(anchorIso || todayIso);
+  const dow = anchor.getDay(); // 0=Dom..6=Sáb
+  const sunday = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - dow);
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + i);
+    const iso = toIsoDate(dt);
+    days.push({
+      iso,
+      weekdayShort: PT_WEEKDAYS_SHORT[i],
+      dayNum: String(dt.getDate()).padStart(2, '0'),
+      monthShort: (PT_MONTHS[dt.getMonth()] || '').slice(0, 3),
+      isToday: iso === todayIso,
+      isSelected: iso === selectedDate,
+    });
+  }
+  return days;
+}
+
+function renderCalendarItemCard(ev, { showDateChip = false, todayIso = '', writeDisabled = '' } = {}) {
+  const isDone = ev.status === 'done';
+  const ws = getWorkspaceMeta(ev.workspace);
+  const kind = getKindMeta(ev.kind);
+  const timeLabel = formatTimeRange(ev.startTime, ev.endTime);
+
+  return `
+    <article class="cal-item-card is-kind-${escapeHtml(kind.id)} ${isDone ? 'is-done' : ''}" data-cal-card="${escapeHtml(ev.id)}">
+      <div class="cal-item-top">
+        <label class="cal-check-wrap" title="${isDone ? 'Marcar como pendente' : 'Marcar como concluído'}">
+          <input
+            type="checkbox"
+            class="cal-checkbox"
+            data-cal-toggle-done="true"
+            data-cal-id="${escapeHtml(ev.id)}"
+            ${isDone ? 'checked' : ''}
+            ${writeDisabled}
+            aria-label="Concluir ${escapeHtml(ev.title)}"
+          />
+          <span class="cal-checkbox-box" aria-hidden="true">${icon('check', 11)}</span>
+        </label>
+
+        <div class="cal-item-main">
+          <div class="cal-item-title-row">
+            <span class="cal-item-title" title="${escapeHtml(ev.title)}">${escapeHtml(ev.title)}</span>
+            ${
+              showDateChip
+                ? `<button type="button" class="cal-date-chip mono tabular" data-action="cal-select-day" data-date="${escapeHtml(ev.date)}" title="Ir para ${escapeHtml(ev.date)}">${escapeHtml(formatRelativeDateChip(ev.date, todayIso))}</button>`
+                : ''
+            }
+          </div>
+
+          <div class="cal-item-meta">
+            <span class="cal-meta-tag is-kind-tag-${escapeHtml(kind.id)}">${escapeHtml(kind.label)}</span>
+            <span class="cal-meta-tag">${icon(ws.iconName, 11)} ${escapeHtml(ws.label)}</span>
+            <span class="cal-meta-time mono tabular">${icon('clock', 11)} ${escapeHtml(timeLabel)}</span>
+            ${ev.subject ? `<span class="cal-meta-subject" title="${escapeHtml(ev.subject)}">${escapeHtml(ev.subject)}</span>` : ''}
+          </div>
+
+          ${ev.notes ? `<p class="cal-item-notes">${escapeHtml(ev.notes)}</p>` : ''}
+        </div>
+      </div>
+
+      <div class="cal-item-actions">
+        ${
+          ev.linkedTaskId
+            ? `<button type="button" class="btn btn-ghost btn-sm cal-linked-btn" data-action="open-task" data-task-id="${escapeHtml(ev.linkedTaskId)}" title="Abrir tarefa vinculada no Kanban">
+                ${icon('columns', 12)}
+                <span class="mono">${escapeHtml(ev.linkedTaskId)}</span>
+                ${icon('arrow-up-right', 12)}
+              </button>`
+            : `<button type="button" class="btn btn-secondary btn-sm cal-promote-btn" data-action="cal-promote" data-cal-id="${escapeHtml(ev.id)}" ${writeDisabled} title="Criar tarefa no Kanban (Agendado) vinculada a este item">
+                ${icon('arrow-up-right', 12)} Enviar p/ Kanban
+              </button>`
+        }
+        <button type="button" class="btn btn-ghost btn-icon btn-sm cal-delete-btn" data-action="cal-delete" data-cal-id="${escapeHtml(ev.id)}" ${writeDisabled} aria-label="Excluir ${escapeHtml(ev.title)}" title="Excluir item">
+          ${icon('trash', 13)}
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+export function renderCalendarView(state, ui) {
+  const cal = ui.calendar || {};
+  const todayIso = getTodayIso();
+  const selectedDate = cal.selectedDate || todayIso;
+  const activeMonth = cal.month || selectedDate.slice(0, 7);
+  const viewMode = cal.viewMode === 'week' ? 'week' : 'month';
+  const activeWorkspace = cal.workspace || 'all';
+  const writeDisabled = ui.disconnected ? 'disabled' : '';
+
+  const allEvents = Array.isArray(cal.events) ? cal.events : [];
+  const filteredEvents = activeWorkspace === 'all'
+    ? allEvents
+    : allEvents.filter((ev) => ev.workspace === activeWorkspace);
+
+  const eventsByDate = new Map();
+  for (const ev of sortCalendarEvents(filteredEvents)) {
+    const key = String(ev.date || '');
+    if (!key) continue;
+    if (!eventsByDate.has(key)) eventsByDate.set(key, []);
+    eventsByDate.get(key).push(ev);
+  }
+
+  const selectedDayEvents = eventsByDate.get(selectedDate) || [];
+  const horizonIso = addDaysIso(todayIso, 14);
+  const upcomingDeadlines = sortCalendarEvents(
+    filteredEvents.filter(
+      (ev) => ev.status !== 'done' && ev.date >= todayIso && ev.date <= horizonIso
+    )
+  ).slice(0, 12);
+
+  const summary = cal.summary || {
+    total: allEvents.length,
+    upcomingDeadlines: upcomingDeadlines.length,
+    todayCount: (eventsByDate.get(todayIso) || []).length,
+    studyHoursWeek: 0,
+  };
+
+  const weekDays = buildWeekDaysSunSat(selectedDate, todayIso, selectedDate);
+  const periodTitle = viewMode === 'month'
+    ? formatMonthTitle(activeMonth)
+    : `${weekDays[0].dayNum} ${weekDays[0].monthShort} – ${weekDays[6].dayNum} ${weekDays[6].monthShort} ${weekDays[6].iso.slice(0, 4)}`;
+
+  const monthCells = viewMode === 'month' ? buildMonthGrid(activeMonth, todayIso, selectedDate) : [];
+
+  return `
+    <div class="cal-view">
+      <!-- Top Bar -->
+      <div class="cal-toolbar">
+        <div class="cal-toolbar-left">
+          <div class="cal-ws-pills" role="group" aria-label="Filtrar por ambiente">
+            ${CALENDAR_WORKSPACES.map((ws) => `
+              <button
+                type="button"
+                class="cal-ws-pill ${activeWorkspace === ws.id ? 'is-active' : ''}"
+                data-action="cal-set-workspace"
+                data-workspace="${ws.id}"
+                aria-pressed="${activeWorkspace === ws.id ? 'true' : 'false'}"
+              >
+                ${icon(ws.iconName, 13)}
+                <span>${escapeHtml(ws.label)}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <div class="cal-toolbar-center">
+          <div class="cal-nav-group">
+            <button type="button" class="btn btn-secondary btn-icon btn-sm" data-action="cal-nav-period" data-delta="-1" aria-label="${viewMode === 'month' ? 'Mês anterior' : 'Semana anterior'}" title="${viewMode === 'month' ? 'Mês anterior' : 'Semana anterior'}">
+              ${icon('chevron-left', 15)}
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" data-action="cal-nav-period" data-delta="0">Hoje</button>
+            <button type="button" class="btn btn-secondary btn-icon btn-sm" data-action="cal-nav-period" data-delta="1" aria-label="${viewMode === 'month' ? 'Próximo mês' : 'Próxima semana'}" title="${viewMode === 'month' ? 'Próximo mês' : 'Próxima semana'}">
+              ${icon('chevron-right', 15)}
+            </button>
+          </div>
+          <h2 class="cal-period-title tabular">${escapeHtml(periodTitle)}</h2>
+        </div>
+
+        <div class="cal-toolbar-right">
+          <div class="cal-mode-toggle" role="group" aria-label="Modo de visualização">
+            <button type="button" class="cal-mode-btn ${viewMode === 'month' ? 'is-active' : ''}" data-action="cal-set-mode" data-mode="month" aria-pressed="${viewMode === 'month' ? 'true' : 'false'}">Mês</button>
+            <button type="button" class="cal-mode-btn ${viewMode === 'week' ? 'is-active' : ''}" data-action="cal-set-mode" data-mode="week" aria-pressed="${viewMode === 'week' ? 'true' : 'false'}">Semana</button>
+          </div>
+
+          <span class="cal-privacy-badge" title="Salvo localmente e ignorado pelo Git (.gitignore)">
+            ${icon('lock', 12)}
+            <span>Privado · fora do Git</span>
+          </span>
+
+          <button type="button" class="btn btn-primary btn-sm" data-action="cal-open-new-modal" ${writeDisabled}>
+            ${icon('plus', 14)}
+            <span>Novo item</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Compact Sober KPI Strip -->
+      <div class="cal-summary-strip">
+        <div class="cal-stat-chip">
+          <span class="cal-stat-label">Hoje</span>
+          <strong class="cal-stat-val mono tabular">${escapeHtml(summary.todayCount ?? 0)}</strong>
+        </div>
+        <div class="cal-stat-chip">
+          <span class="cal-stat-label">Próximos prazos</span>
+          <strong class="cal-stat-val mono tabular">${escapeHtml(summary.upcomingDeadlines ?? 0)}</strong>
+        </div>
+        <div class="cal-stat-chip">
+          <span class="cal-stat-label">Estudo na semana</span>
+          <strong class="cal-stat-val mono tabular">${escapeHtml(summary.studyHoursWeek ?? 0)}h</strong>
+        </div>
+        <div class="cal-stat-chip">
+          <span class="cal-stat-label">Itens no filtro</span>
+          <strong class="cal-stat-val mono tabular">${filteredEvents.length}</strong>
+        </div>
+      </div>
+
+      ${
+        cal.error
+          ? `<div class="cal-error-banner" role="alert">
+              <div class="cal-error-main">
+                ${icon('alert-triangle', 16)}
+                <span>Não foi possível carregar o calendário privado: <span class="mono">${escapeHtml(cal.error)}</span></span>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="cal-reload">Tentar novamente</button>
+            </div>`
+          : ''
+      }
+
+      ${
+        cal.loading && !cal.loaded
+          ? `<div class="cal-loading-grid" aria-busy="true" aria-label="Carregando calendário">
+              <div class="skeleton-box" style="height: 460px;"></div>
+              <div class="skeleton-box" style="height: 460px;"></div>
+            </div>`
+          : `
+      <div class="cal-layout">
+        <!-- Left: Monthly or Weekly Calendar -->
+        <section class="cal-board" aria-label="${viewMode === 'month' ? 'Calendário mensal' : 'Calendário semanal'}">
+          ${
+            viewMode === 'month'
+              ? `
+            <div class="cal-month-head" role="row">
+              ${PT_WEEKDAYS_SHORT.map((wd) => `<div class="cal-month-dow" role="columnheader">${wd}</div>`).join('')}
+            </div>
+            <div class="cal-month-grid" role="grid">
+              ${monthCells.map((cell) => {
+                const dayEvents = eventsByDate.get(cell.iso) || [];
+                const visible = dayEvents.slice(0, 3);
+                const overflow = dayEvents.length - visible.length;
+                return `
+                  <button
+                    type="button"
+                    class="cal-day-cell ${cell.inCurrentMonth ? '' : 'is-outside'} ${cell.isToday ? 'is-today' : ''} ${cell.isSelected ? 'is-selected' : ''}"
+                    data-action="cal-select-day"
+                    data-date="${escapeHtml(cell.iso)}"
+                    aria-label="${escapeHtml(formatFullDatePt(cell.iso))}, ${dayEvents.length} ${dayEvents.length === 1 ? 'item' : 'itens'}"
+                    aria-pressed="${cell.isSelected ? 'true' : 'false'}"
+                  >
+                    <div class="cal-day-head">
+                      <span class="cal-day-num mono tabular">${cell.dayNum}</span>
+                      ${dayEvents.length > 0 ? `<span class="cal-day-count mono tabular">${dayEvents.length}</span>` : ''}
+                    </div>
+                    <div class="cal-day-pills">
+                      ${visible.map((ev) => {
+                        const kind = getKindMeta(ev.kind);
+                        return `
+                          <span class="cal-pill is-kind-${escapeHtml(kind.id)} ${ev.status === 'done' ? 'is-done' : ''}" title="${escapeHtml(`${kind.label}: ${ev.title}${ev.startTime ? ` (${formatTimeRange(ev.startTime, ev.endTime)})` : ''}`)}">
+                            ${ev.startTime ? `<span class="cal-pill-time mono tabular">${escapeHtml(ev.startTime)}</span>` : ''}
+                            <span class="cal-pill-title">${escapeHtml(ev.title)}</span>
+                          </span>
+                        `;
+                      }).join('')}
+                      ${overflow > 0 ? `<span class="cal-pill-more mono tabular">+${overflow} mais</span>` : ''}
+                    </div>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          `
+              : `
+            <div class="cal-week-grid">
+              ${weekDays.map((day) => {
+                const dayEvents = eventsByDate.get(day.iso) || [];
+                return `
+                  <div class="cal-week-col ${day.isToday ? 'is-today' : ''} ${day.isSelected ? 'is-selected' : ''}">
+                    <button
+                      type="button"
+                      class="cal-week-col-head"
+                      data-action="cal-select-day"
+                      data-date="${escapeHtml(day.iso)}"
+                      aria-pressed="${day.isSelected ? 'true' : 'false'}"
+                    >
+                      <span class="cal-week-dow">${day.weekdayShort}</span>
+                      <span class="cal-week-date mono tabular">${day.dayNum} ${day.monthShort}</span>
+                    </button>
+                    <div class="cal-week-col-body">
+                      ${
+                        dayEvents.length === 0
+                          ? `<div class="cal-week-empty" aria-label="Sem itens">—</div>`
+                          : dayEvents.map((ev) => {
+                              const ws = getWorkspaceMeta(ev.workspace);
+                              const kind = getKindMeta(ev.kind);
+                              return `
+                                <button
+                                  type="button"
+                                  class="cal-week-block is-kind-${escapeHtml(kind.id)} ${ev.status === 'done' ? 'is-done' : ''}"
+                                  data-action="cal-select-day"
+                                  data-date="${escapeHtml(day.iso)}"
+                                >
+                                  <div class="cal-week-block-time mono tabular">${escapeHtml(formatTimeRange(ev.startTime, ev.endTime))}</div>
+                                  <div class="cal-week-block-title">${escapeHtml(ev.title)}</div>
+                                  <div class="cal-week-block-meta">
+                                    <span class="cal-meta-tag">${icon(ws.iconName, 10)} ${escapeHtml(ws.label)}</span>
+                                    ${ev.subject ? `<span class="cal-meta-subject">${escapeHtml(ev.subject)}</span>` : ''}
+                                  </div>
+                                </button>
+                              `;
+                            }).join('')
+                      }
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `
+          }
+        </section>
+
+        <!-- Right: Painel do Dia & Próximos 14 dias -->
+        <aside class="cal-side-panel" aria-label="Painel do dia selecionado e próximos prazos">
+          <div class="cal-side-header">
+            <div class="cal-side-date-group">
+              <span class="cal-side-kicker mono tabular">${escapeHtml(selectedDate)}</span>
+              <h3 class="cal-side-title">${escapeHtml(formatFullDatePt(selectedDate))}</h3>
+            </div>
+            <span class="badge badge-neutral mono tabular">${selectedDayEvents.length} ${selectedDayEvents.length === 1 ? 'item' : 'itens'}</span>
+          </div>
+
+          <!-- Inline Quick-Add Form -->
+          <form class="cal-quick-form" id="form-cal-quick-add" data-cal-date="${escapeHtml(selectedDate)}">
+            <div class="cal-quick-form-head">
+              <span class="section-heading">Adicionar ao dia</span>
+            </div>
+            <input
+              type="text"
+              name="title"
+              class="input"
+              placeholder="Título (ex.: Prova de Algoritmos, Revisar PR…)"
+              required
+              autocomplete="off"
+              ${writeDisabled}
+            />
+            <div class="cal-form-row-2">
+              <select name="workspace" class="select" aria-label="Ambiente" ${writeDisabled}>
+                <option value="work" ${activeWorkspace === 'work' ? 'selected' : ''}>Trabalho</option>
+                <option value="study" ${activeWorkspace === 'study' ? 'selected' : ''}>Faculdade</option>
+                <option value="personal" ${activeWorkspace === 'personal' || activeWorkspace === 'all' ? 'selected' : ''}>Pessoal</option>
+              </select>
+              <select name="kind" class="select" aria-label="Tipo" ${writeDisabled}>
+                ${CALENDAR_KINDS.map((k) => `<option value="${k.id}">${escapeHtml(k.label)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="cal-form-row-3">
+              <input type="text" name="subject" class="input" placeholder="Matéria / Projeto" autocomplete="off" ${writeDisabled} />
+              <input type="time" name="startTime" class="input mono" aria-label="Horário início" title="Início" ${writeDisabled} />
+              <input type="time" name="endTime" class="input mono" aria-label="Horário fim" title="Fim" ${writeDisabled} />
+            </div>
+            <input type="text" name="notes" class="input" placeholder="Notas rápidas (opcional)" autocomplete="off" ${writeDisabled} />
+            <div class="cal-quick-form-foot">
+              <button type="submit" class="btn btn-primary btn-sm" style="width:100%;" ${writeDisabled}>
+                ${icon('plus', 13)} Adicionar em ${escapeHtml(formatRelativeDateChip(selectedDate, todayIso))}
+              </button>
+            </div>
+          </form>
+
+          <!-- Selected Day Items -->
+          <div class="cal-side-section">
+            <div class="cal-side-section-head">
+              <span class="section-heading">Itens do dia</span>
+              <span class="mono tabular cal-side-count">${selectedDayEvents.length}</span>
+            </div>
+            ${
+              selectedDayEvents.length === 0
+                ? `<div class="cal-empty-box">
+                    ${icon('calendar', 20)}
+                    <span>Nenhum compromisso registrado para este dia.</span>
+                  </div>`
+                : `<div class="cal-item-list">
+                    ${selectedDayEvents.map((ev) => renderCalendarItemCard(ev, { showDateChip: false, todayIso, writeDisabled })).join('')}
+                  </div>`
+            }
+          </div>
+
+          <!-- Upcoming 14 Days -->
+          <div class="cal-side-section">
+            <div class="cal-side-section-head">
+              <span class="section-heading">Próximos prazos (14 dias)</span>
+              <span class="mono tabular cal-side-count">${upcomingDeadlines.length}</span>
+            </div>
+            ${
+              upcomingDeadlines.length === 0
+                ? `<div class="cal-empty-box">
+                    ${icon('check-circle', 20)}
+                    <span>Sem prazos pendentes nos próximos 14 dias.</span>
+                  </div>`
+                : `<div class="cal-item-list">
+                    ${upcomingDeadlines.map((ev) => renderCalendarItemCard(ev, { showDateChip: true, todayIso, writeDisabled })).join('')}
+                  </div>`
+            }
+          </div>
+        </aside>
+      </div>
+          `
+      }
+    </div>
+  `;
+}
+
+export function renderCalendarEventModal(ui) {
+  const cal = ui.calendar || {};
+  const defaultDate = cal.selectedDate || getTodayIso();
+  const defaultWs = cal.workspace && cal.workspace !== 'all' ? cal.workspace : 'study';
+
+  return `
+    <form class="modal" id="form-cal-modal-add">
+      <div class="modal-header">
+        <h2 class="modal-title">${icon('calendar', 18)} Novo item — Calendário Privado</h2>
+        <button type="button" class="btn btn-ghost btn-icon" data-action="close-modal" aria-label="Fechar">${icon('x', 16)}</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label class="field-label" for="cal-m-title">Título</label>
+          <input id="cal-m-title" name="title" class="input" placeholder="Ex.: Entrega do trabalho de Redes, Estudar Cálculo II…" required data-autofocus="true" autocomplete="off" />
+        </div>
+        <div class="meta-grid">
+          <div class="field">
+            <label class="field-label" for="cal-m-date">Data</label>
+            <input id="cal-m-date" name="date" type="date" class="input mono" value="${escapeHtml(defaultDate)}" required />
+          </div>
+          <div class="field">
+            <label class="field-label" for="cal-m-ws">Ambiente</label>
+            <select id="cal-m-ws" name="workspace" class="select">
+              <option value="work" ${defaultWs === 'work' ? 'selected' : ''}>Trabalho</option>
+              <option value="study" ${defaultWs === 'study' ? 'selected' : ''}>Faculdade</option>
+              <option value="personal" ${defaultWs === 'personal' ? 'selected' : ''}>Pessoal</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cal-m-kind">Tipo</label>
+            <select id="cal-m-kind" name="kind" class="select">
+              ${CALENDAR_KINDS.map((k) => `<option value="${k.id}">${escapeHtml(k.label)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cal-m-subject">Matéria / Projeto</label>
+            <input id="cal-m-subject" name="subject" class="input" placeholder="Ex.: Estruturas de Dados" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="cal-m-start">Início</label>
+            <input id="cal-m-start" name="startTime" type="time" class="input mono" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="cal-m-end">Fim</label>
+            <input id="cal-m-end" name="endTime" type="time" class="input mono" />
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="cal-m-notes">Notas (opcional)</label>
+          <textarea id="cal-m-notes" name="notes" class="textarea" rows="3" placeholder="Detalhes, capítulos, links ou observações…"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content:space-between;">
+        <span class="cal-privacy-badge" title="Armazenado localmente e ignorado pelo Git">
+          ${icon('lock', 12)}
+          <span>Privado · fora do Git</span>
+        </span>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary">${icon('plus', 14)} Salvar item</button>
+        </div>
+      </div>
+    </form>
   `;
 }

@@ -126,6 +126,30 @@ export const api = {
   updateConfig(payload) {
     return request('/api/config', { method: 'PATCH', body: payload });
   },
+
+  getCalendar({ workspace = '', month = '' } = {}) {
+    const params = new URLSearchParams();
+    if (workspace && workspace !== 'all') params.set('workspace', workspace);
+    if (month) params.set('month', month);
+    const qs = params.toString();
+    return request(`/api/calendar${qs ? `?${qs}` : ''}`);
+  },
+
+  createCalendarEvent(payload) {
+    return request('/api/calendar', { method: 'POST', body: payload });
+  },
+
+  updateCalendarEvent(id, payload) {
+    return request(`/api/calendar/${encodeURIComponent(id)}`, { method: 'PATCH', body: payload });
+  },
+
+  deleteCalendarEvent(id) {
+    return request(`/api/calendar/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  promoteCalendarEvent(id, payload = { boardLane: 'scheduled' }) {
+    return request(`/api/calendar/${encodeURIComponent(id)}/promote`, { method: 'POST', body: payload });
+  },
 };
 
 const SSE_EVENTS = [
@@ -138,6 +162,7 @@ const SSE_EVENTS = [
   'run:stopped',
   'gate:updated',
   'adapter:updated',
+  'calendar:updated',
   'watcher:error',
 ];
 
