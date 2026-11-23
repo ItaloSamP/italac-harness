@@ -1,0 +1,34 @@
+# Changelog
+
+One line per harness change: date · incident key (when it came from one) · what changed. Rule: `.claude/rules/85-self-improvement.md`.
+
+## 2026-11-11
+- `eval-measures-stale-snapshot` — in-session routing evals read rules cached at session start; two rows marked invalid, procedure now requires a fresh session. Fresh run pending.
+- `solo-delivery-default` — user-approved (ADR Q1): gated work lands on the local main line, one commit per task, no question; branch + PR and layered commits are collaboration mode. Push, PR, tag and branch deletion stay Level C. Ceiling re-measured to 33000.
+- `vendored-frontmatter-corrupted` — the-fool frontmatter repaired; validator now rejects a description that swallowed another frontmatter key.
+- Close-out (ADR WO-9): ceilings lowered to the measured values rounded up — always-loaded text 32,800 B, descriptions 19,300 ch; README counts corrected (33 skills, 5 scripts).
+- `core-skills-rarely-used` — user-approved (ADR Q5): `the-judge`, `the-jury`, `mermaid-studio` and `web-accessibility` moved to `optional/skills/` (bodies untouched; copy the folder into a project's `.claude/skills/` to enable); core references now name the fallback that stays (`/audit`, `/the-fool`, block 4 of the UI gate, Mermaid written in Markdown).
+- `amplifier-block-cost` — user-approved (ADR Q4): rule 80 shows one line in the user's language (`Amplified: … · proof: …`) and keeps the four-question pass internal; the full block only with `/amplify`; the task template has one `## Proof` section instead of the four-line block, and `validate-task.mjs` reads it (old task files still validate).
+- `installer-ps1-mojibake` — `install.ps1` reads `CLAUDE.md` as UTF-8 and writes it without BOM, so the copy installed by Windows PowerShell 5.1 is byte-identical to the `install.sh` one and passes the validator.
+- `work-never-lands-on-main` — `/deliver` step 3 asks once whether to merge into the local base branch (and push, only when a remote exists) and offers to make it standing; a standing instruction skips the question; `@committer` handles `APPROVED: merge` and marks `SHIPPED` as `merged into <base> @<hash>`. The default itself is unchanged.
+- `report-not-user-verifiable` — the final report template (rule 90) gains `How to see it` and `Where it lives`, in the user's language; `/deliver` points to it instead of carrying a copy.
+- `first-run-interview` — installers, README and the session hook no longer send a new user to `/context-generator`; rule 75 maps an existing repository silently on the first T2+ task, then runs the adoption steps; `/kickoff` shows a three-line plan preview without stopping.
+- `real-data-no-policy` — rule 60 item 12 (read-only credentials, smallest sample, no real records in task files, logs, screenshots or handoffs, writes are Level C); detail in section 3 of the verification reference.
+- `web-only-verification` — new `.claude/skills/build/references/verification.md` (adoption, proof per kind of project, real data, long runs); rules 40 and 70, `@qa-engineer` and `/design` verify on the surface's declared oracle instead of assuming a browser; triage gains an Analysis row; the task template replaces API/Data changes with `## Contract changes` and Open user decisions with `## Needs from user`; README says what the team can prove per kind.
+- `brownfield-gate-unpassable` — new `scripts/gate.mjs` runs the Gate table under `## Verification` in the project's `CLAUDE.md` (`exit0` or a user-accepted `max:<N>:<regex>` baseline; exit 2 when no gate is declared); `@committer`, rule 50 and rule 70 gate on it; installers ship the `## Verification` block; the testing-policy template gains `## Accepted baseline` and loses another product's examples.
+- `instruction-not-executable` — `@explorer` returns a full map in its answer instead of writing a file it has no tool for; `/retro` and `/harness-check` say what to do when an agent has no eval scenario (write one that reproduces the incident first).
+- `stale-refs-in-vendored-skill` — `/test-runner` reads `## Test scope` and the Commands table and no longer names sections and steps that do not exist; the validator now checks the four adapted skills like our own and rejects any back-ticked `## Heading` that no template has.
+- `task-state-not-resumable` — `BLOCKED(<previous>): <reason>` keeps the status to restore; `CANCELLED` and `SUPERSEDED: <task file>` are terminal (validator, SessionStart hook, rule 10, task template).
+- `taskfile-two-writers` — one task file per unit of work, slices by ID; the Maestro is its only writer and logs each returned slice (`20-delegation.md`, `10-orchestration.md`, `@developer`, `/build`). Rule 10 triage gains a Harness row.
+- `bugfix-taskfile-fails-validator` — `validate-task.mjs --profile short` (default for `task-fix-*` and `task-hotfix-*`) requires only Problem, Acceptance criteria and Files; `/hotfix` task files are named `task-hotfix-<slug>.md`.
+- `review-gate-sees-wrong-diff` — new `scripts/task-diff.mjs`: `--init` records the task's Base commit, a run writes the working-tree patch of the files in `## Files` to `.specs/logs/` and names what changed outside them and since the last round; `/audit`, `@code-reviewer`, `/build`, `/bugfix` and `@committer` use it, so review works before the first commit.
+- `always-loaded-duplication` — cut the fixed cost: `CLAUDE.md` constitution drops the skill list, routes block and rules-index table (4,213 → 1,756 B); rule 85 keeps tiers, triggers and guardrails, its procedure moved to `/retro` (4,320 → 2,483 B); `AGENTS.md` is roster + pointers; three vendored descriptions trimmed to ≤ 350 chars; `/kickoff` runs `/retro` only when incidents are open; ceilings lowered to 33,505 B and 20,900 ch.
+- `budget-undercounted` — the validator now meters the whole fixed cost (constitution + rules bytes, description chars) against ceilings and fails above them, and warns when `settings.json` and its template drift; added `evals/scripts/selftest.mjs` (script self-test) and `evals/routing.md` (routing eval).
+- `dangling-skill-ref-in-description` — 5 skill descriptions pointed the router at skills that are not installed; fixed, and the validator now rejects the whole class.
+- Added rule `85-self-improvement.md`, skill `/retro`, `scripts/incident.mjs` (incident log with recurrence count) and `scripts/validate-task.mjs` (deterministic task-file check, run by `/blueprint` and `@committer`).
+- Installers refuse to overwrite a project copy that has fixes not yet ported upstream (`--force` overrides).
+
+## 2026-11-10
+- Design engines: `/design` skill, UI gate in the Definition of Done, `@designer` follows `/design`.
+- Round-table audit: 18 defects fixed (`.specs/docs/review-harness-roundtable.md`); added `/kickoff`, `/discovery`, `/agent-creator`, `@ai-engineer`; catalogue trimmed from 40 to 35 skills.
+- Initial harness: 11 rules, 13 agents, pipeline skills, installers, validator.

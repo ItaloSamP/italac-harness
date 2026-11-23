@@ -1,0 +1,7 @@
+.specs/logs/
+prototypes/**/node_modules/
+node_modules/
+.env
+.env.*
+.claude/settings.local.json
+.taste-skill/

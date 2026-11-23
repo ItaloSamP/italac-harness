@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "Task",
+      "Skill",
+      "Bash"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(git tag *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh release *)",
+      "Bash(npm publish *)",
+      "Bash(pnpm publish *)",
+      "Bash(yarn publish *)",
+      "Bash(vercel *)",
+      "Bash(netlify deploy *)",
+      "Bash(wrangler deploy *)",
+      "Bash(wrangler publish *)",
+      "Bash(terraform apply *)",
+      "Bash(terraform destroy *)",
+      "Bash(kubectl apply *)",
+      "Bash(kubectl delete *)",
+      "Bash(docker push *)"
+    ],
+    "deny": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git commit --no-verify *)",
+      "Bash(rm -rf / *)",
+      "Bash(rm -rf ~ *)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/session-start.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
