@@ -3,6 +3,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -14,6 +16,7 @@ import { after, before, describe, it } from 'node:test';
 import {
   createWorkspaceManager,
   readGitBranch,
+  validateNewWorkspaceName,
   validateWorkspaceId,
 } from '../lib/workspaces.mjs';
 import { createServer } from '../server.mjs';
@@ -30,9 +33,35 @@ function setupWorkspaceFixture() {
   mkdirSync(join(wsPrimary, '.git'), { recursive: true });
   mkdirSync(join(wsPrimary, '.specs', 'tasks'), { recursive: true });
   mkdirSync(join(wsPrimary, '.specs', 'hub'), { recursive: true });
+  mkdirSync(join(wsPrimary, '.specs', 'logs'), { recursive: true });
+  mkdirSync(join(wsPrimary, '.claude', 'rules'), { recursive: true });
+  mkdirSync(join(wsPrimary, '.claude', 'agents'), { recursive: true });
+  mkdirSync(join(wsPrimary, 'scripts'), { recursive: true });
   writeFileSync(join(wsPrimary, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
-  writeFileSync(join(wsPrimary, 'CLAUDE.md'), '# Harness\n', 'utf8');
-  writeFileSync(join(wsPrimary, 'AGENTS.md'), '# Agents\n', 'utf8');
+  writeFileSync(
+    join(wsPrimary, 'CLAUDE.md'),
+    '# Harness Constitution\n\nRule 1: Evidence or nothing.\n\n# Project\n\nPRIMARY_ONLY_SECRET_NOTES\n',
+    'utf8',
+  );
+  writeFileSync(join(wsPrimary, 'AGENTS.md'), '# Agents\n\n| @developer | dev |\n', 'utf8');
+  writeFileSync(
+    join(wsPrimary, '.claude', 'rules', '80-prompt-amplifier.md'),
+    '# Prompt Amplifier\n\n4-part protocol.\n',
+    'utf8',
+  );
+  writeFileSync(
+    join(wsPrimary, '.claude', 'agents', 'developer.md'),
+    '---\nname: developer\ndescription: Implements tasks\nmodel: inherit\n---\n\nDeveloper agent.\n',
+    'utf8',
+  );
+  // Local secrets & logs that must NEVER be copied into newly created projects
+  writeFileSync(
+    join(wsPrimary, '.claude', 'settings.json'),
+    JSON.stringify({ env: { SECRET_TOKEN: 'DO_NOT_COPY_ME' } }),
+    'utf8',
+  );
+  writeFileSync(join(wsPrimary, '.specs', 'logs', 'stale.log'), 'old log\n', 'utf8');
+  writeFileSync(join(wsPrimary, 'scripts', 'helper.mjs'), 'export const ok = true;\n', 'utf8');
 
   // Workspace 2: sibling project ("REQ-2026.2-T02-RedeCafuringa") with git branch feat/api, no harness yet
   const wsSibling = join(workspacesDir, 'REQ-2026.2-T02-RedeCafuringa');
@@ -281,6 +310,133 @@ describe('hub/lib/workspaces.mjs — Unit Tests', () => {
     const { context: ctxA2 } = mgr.selectWorkspace('workflow');
     assert.equal(ctxA2, ctxA1);
   });
+
+  it('validateNewWorkspaceName validates format, length, traversal, and Windows reserved names', () => {
+    assert.equal(validateNewWorkspaceName('novo-projeto'), 'novo-projeto');
+    assert.equal(validateNewWorkspaceName('Projeto 2026_v1.0'), 'Projeto 2026_v1.0');
+    assert.equal(validateNewWorkspaceName('  trimmed-ok  '), 'trimmed-ok');
+    assert.equal(validateNewWorkspaceName('A'.repeat(64)), 'A'.repeat(64));
+
+    const badNames = [
+      '',
+      '   ',
+      null,
+      123,
+      'A'.repeat(65),
+      '.hidden',
+      '-starts-dash',
+      '_starts-underscore',
+      'trailing-dot.',
+      '..',
+      '../escape',
+      'a..b',
+      'a/b',
+      'a\\b',
+      'a\0b',
+      'CON',
+      'con',
+      'PRN',
+      'AUX',
+      'NUL',
+      'COM1',
+      'com9',
+      'LPT1',
+      'lpt9',
+      'CON.txt',
+      'bad@name',
+      'bad:name',
+    ];
+    for (const bad of badNames) {
+      assert.throws(() => validateNewWorkspaceName(bad), {
+        code: 'INVALID_WORKSPACE_NAME',
+        statusCode: 400,
+      });
+    }
+  });
+
+  it('createWorkspace creates project with harness ON, excludes secrets/logs, and syncs Multi-AI adapters', () => {
+    const mgr = createWorkspaceManager({
+      primaryRootDir: fx.wsPrimary,
+      workspacesDir: fx.workspacesDir,
+    });
+
+    const res = mgr.createWorkspace({
+      name: 'app-com-harness',
+      initGit: true,
+      installHarness: true,
+    });
+
+    assert.equal(res.installedHarness, true);
+    assert.equal(res.workspace.id, 'app-com-harness');
+    assert.equal(res.workspace.hasHarness, true);
+    assert.equal(res.workspace.isPrimary, false);
+    assert.equal(mgr.activeId, 'workflow', 'openAfterCreate defaults to false');
+
+    const targetDir = join(fx.workspacesDir, 'app-com-harness');
+    assert.ok(existsSync(join(targetDir, '.claude', 'rules', '80-prompt-amplifier.md')));
+    assert.ok(existsSync(join(targetDir, '.claude', 'agents', 'developer.md')));
+    assert.ok(
+      !existsSync(join(targetDir, '.claude', 'settings.json')),
+      '.claude/settings.json local secrets must be excluded',
+    );
+    assert.ok(existsSync(join(targetDir, 'AGENTS.md')));
+    assert.ok(existsSync(join(targetDir, 'CLAUDE.md')));
+    const copiedClaude = readFileSync(join(targetDir, 'CLAUDE.md'), 'utf8');
+    assert.ok(copiedClaude.includes('Rule 1: Evidence or nothing.'));
+    assert.ok(
+      !copiedClaude.includes('PRIMARY_ONLY_SECRET_NOTES'),
+      'primary project-specific notes must not leak into new project CLAUDE.md',
+    );
+    assert.ok(existsSync(join(targetDir, 'scripts', 'helper.mjs')));
+    assert.ok(existsSync(join(targetDir, '.specs', 'tasks')));
+    assert.ok(existsSync(join(targetDir, '.specs', 'docs')));
+    assert.ok(existsSync(join(targetDir, '.specs', 'logs')));
+    assert.ok(existsSync(join(targetDir, '.specs', 'harness')));
+    assert.deepEqual(
+      readdirSync(join(targetDir, '.specs', 'logs')),
+      [],
+      '.specs/logs/* from primary must not be copied',
+    );
+
+    // Multi-AI adapter projections synced immediately
+    assert.ok(existsSync(join(targetDir, '.gemini', 'rules', 'harness.md')));
+    assert.ok(existsSync(join(targetDir, '.agents', 'rules', 'harness.md')));
+    assert.ok(existsSync(join(targetDir, '.cursor', 'rules', 'harness.mdc')));
+    assert.ok(existsSync(join(targetDir, '.specs', 'hub', 'adapters-manifest.json')));
+
+    if (res.initializedGit) {
+      assert.ok(existsSync(join(targetDir, '.git')));
+      assert.equal(res.workspace.isGit, true);
+    }
+
+    // Duplicate name rejected with 409 WORKSPACE_EXISTS
+    assert.throws(
+      () => mgr.createWorkspace({ name: 'app-com-harness' }),
+      { code: 'WORKSPACE_EXISTS', statusCode: 409 },
+    );
+  });
+
+  it('createWorkspace creates clean empty folder when installHarness=false and initGit=false', () => {
+    const mgr = createWorkspaceManager({
+      primaryRootDir: fx.wsPrimary,
+      workspacesDir: fx.workspacesDir,
+    });
+
+    const res = mgr.createWorkspace({
+      name: 'pasta-limpa',
+      initGit: false,
+      installHarness: false,
+    });
+
+    assert.equal(res.installedHarness, false);
+    assert.equal(res.initializedGit, false);
+    assert.equal(res.workspace.id, 'pasta-limpa');
+    assert.equal(res.workspace.hasHarness, false);
+    assert.equal(res.workspace.isGit, false);
+
+    const targetDir = join(fx.workspacesDir, 'pasta-limpa');
+    assert.deepEqual(readdirSync(targetDir), [], 'folder must be completely empty');
+  });
 });
 
 describe('Multi-Workspace HTTP + SSE API & Isolation', () => {
@@ -476,5 +632,96 @@ describe('Multi-Workspace HTTP + SSE API & Isolation', () => {
     });
     assert.equal(rMissing.status, 404);
     assert.equal(rMissing.json.error, 'WORKSPACE_NOT_FOUND');
+  });
+
+  it('POST /api/workspaces creates a project with harness ON, opens it, and broadcasts SSE events', async () => {
+    await apiRequest(port, 'POST', '/api/workspaces/select', { id: 'workflow' });
+    const sse = openSseCollector(port);
+    await new Promise((r) => setTimeout(r, 80));
+
+    try {
+      const res = await apiRequest(port, 'POST', '/api/workspaces', {
+        name: 'http-harness-project',
+        initGit: true,
+        installHarness: true,
+        openAfterCreate: true,
+      });
+
+      assert.equal(res.status, 201);
+      assert.equal(res.json.ok, true);
+      assert.equal(res.json.installedHarness, true);
+      assert.equal(typeof res.json.initializedGit, 'boolean');
+      assert.equal(res.json.workspace.id, 'http-harness-project');
+      assert.equal(res.json.workspace.hasHarness, true);
+      assert.equal(res.json.state.workspace.id, 'http-harness-project');
+      assert.ok(
+        res.json.state.workspaces.some((w) => w.id === 'http-harness-project'),
+        'state.workspaces must include the newly created workspace',
+      );
+
+      const targetDir = join(fx.workspacesDir, 'http-harness-project');
+      assert.ok(existsSync(join(targetDir, '.claude', 'rules', '80-prompt-amplifier.md')));
+      assert.ok(!existsSync(join(targetDir, '.claude', 'settings.json')));
+      assert.ok(existsSync(join(targetDir, 'AGENTS.md')));
+      assert.ok(existsSync(join(targetDir, 'CLAUDE.md')));
+      assert.ok(existsSync(join(targetDir, '.gemini', 'rules', 'harness.md')));
+      assert.ok(existsSync(join(targetDir, '.cursor', 'rules', 'harness.mdc')));
+      assert.ok(existsSync(join(targetDir, '.agents', 'rules', 'harness.md')));
+
+      const gotWsChanged = await waitFor(() =>
+        sse.events.some(
+          (e) =>
+            e.event === 'workspace:changed' && e.data?.id === 'http-harness-project',
+        ),
+      );
+      assert.equal(gotWsChanged, true, 'expected workspace:changed SSE event');
+
+      const gotStateChanged = await waitFor(() =>
+        sse.events.some(
+          (e) =>
+            e.event === 'state:changed' &&
+            e.data?.reason === 'workspace_created' &&
+            e.data?.workspaceId === 'http-harness-project',
+        ),
+      );
+      assert.equal(gotStateChanged, true, 'expected state:changed SSE event');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('POST /api/workspaces creates a clean empty project with harness OFF and rejects duplicates & invalid names', async () => {
+    await apiRequest(port, 'POST', '/api/workspaces/select', { id: 'workflow' });
+
+    const resEmpty = await apiRequest(port, 'POST', '/api/workspaces', {
+      name: 'http-empty-project',
+      initGit: false,
+      installHarness: false,
+      openAfterCreate: false,
+    });
+    assert.equal(resEmpty.status, 201);
+    assert.equal(resEmpty.json.ok, true);
+    assert.equal(resEmpty.json.installedHarness, false);
+    assert.equal(resEmpty.json.initializedGit, false);
+    assert.equal(resEmpty.json.workspace.id, 'http-empty-project');
+    assert.equal(resEmpty.json.workspace.hasHarness, false);
+    assert.equal(resEmpty.json.state.workspace.id, 'workflow', 'active workspace must stay workflow');
+    assert.deepEqual(readdirSync(join(fx.workspacesDir, 'http-empty-project')), []);
+
+    // Duplicate name -> 409 WORKSPACE_EXISTS
+    const resDup = await apiRequest(port, 'POST', '/api/workspaces', {
+      name: 'http-empty-project',
+    });
+    assert.equal(resDup.status, 409);
+    assert.equal(resDup.json.error, 'WORKSPACE_EXISTS');
+
+    // Invalid / traversal / reserved names -> 400 INVALID_WORKSPACE_NAME
+    for (const badName of ['../evil', 'a/b', 'a\\b', '.hidden', 'CON', 'NUL', '']) {
+      const resBad = await apiRequest(port, 'POST', '/api/workspaces', {
+        name: badName,
+      });
+      assert.equal(resBad.status, 400, `expected 400 for "${badName}"`);
+      assert.equal(resBad.json.error, 'INVALID_WORKSPACE_NAME');
+    }
   });
 });

@@ -4,20 +4,86 @@
 // containment / symlink / dot-folder security, and caches isolated per-workspace stores & runners.
 // Zero dependencies — Node.js v24 native ESM.
 
+import { execFileSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
+  unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
+import { syncAdapters } from './adapters.mjs';
 import { createRunner } from './runner.mjs';
 import { createStore, StoreError, TASK_ID_RE } from './store.mjs';
 
 const IS_WIN = process.platform === 'win32';
 const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+const NEW_WORKSPACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._ -]{0,63}$/;
+const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+const CLAUDE_PROJECT_TEMPLATE = `# Project
+
+<!-- Project-specific. Filled in on the first task; correct what is wrong. -->
+
+## What this is
+
+## Commands
+| Purpose | Command |
+|---------|---------|
+| Dev | |
+| Test (scoped) | |
+| Build | |
+
+## Verification
+Kind: <web | mobile | dashboard | pipeline | analysis | cli-lib | infra>
+
+| Gate | Command | Baseline |
+|------|---------|----------|
+
+| Surface | Proves it | Command or step |
+|---------|-----------|-----------------|
+
+Delivered means:
+
+## Conventions
+
+## Standing instructions
+<!-- Empty = solo default: gated work lands on the local main line, one commit per task; push asks once. Write "always push when green" to push without asking, or "collaboration mode" for branch + PR with layered commits. -->
+
+## Context index
+
+## Lessons learned
+`;
+
+const HARNESS_GITIGNORE_ENTRIES = [
+  '.specs/logs/',
+  'prototypes/**/node_modules/',
+  '.taste-skill/',
+];
+
+function writeFileAtomic(filePath, content) {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}.tmp`;
+  try {
+    writeFileSync(tmpPath, content, 'utf8');
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {
+      // ignore cleanup failure
+    }
+    throw err;
+  }
+}
 
 function normalizeForCompare(p) {
   const resolved = resolve(p);
@@ -55,6 +121,43 @@ export function validateWorkspaceId(id) {
     throw new StoreError(
       'INVALID_WORKSPACE_ID',
       `ID de workspace inválido: "${id}". Selecione uma pasta direta válida.`,
+      400,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Validates a new workspace folder name against strict character, length, traversal,
+ * path separator, and Windows reserved device name rules.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function validateNewWorkspaceName(name) {
+  if (typeof name !== 'string') {
+    throw new StoreError(
+      'INVALID_WORKSPACE_NAME',
+      'Nome do projeto inválido ou ausente.',
+      400,
+    );
+  }
+  const trimmed = name.trim();
+  if (
+    !trimmed ||
+    trimmed.length > 64 ||
+    trimmed.includes('..') ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('\0') ||
+    trimmed.endsWith('.') ||
+    basename(trimmed) !== trimmed ||
+    !NEW_WORKSPACE_NAME_RE.test(trimmed) ||
+    WINDOWS_RESERVED_NAME_RE.test(trimmed)
+  ) {
+    throw new StoreError(
+      'INVALID_WORKSPACE_NAME',
+      `Nome de projeto inválido: "${name}". Use 1 a 64 caracteres alfanuméricos, '.', '_', '-' ou espaço (sem '..', separadores ou nomes reservados).`,
       400,
     );
   }
@@ -391,6 +494,200 @@ export function createWorkspaceManager(options = {}) {
     return { workspace, context };
   }
 
+  function installHarnessIntoTarget(targetPath) {
+    // 1. Copy .claude/ excluding local settings.json / settings.local.json
+    const srcClaude = join(resolvedPrimary, '.claude');
+    const dstClaude = join(targetPath, '.claude');
+    if (existsSync(srcClaude)) {
+      const blockedSettings = normalizeForCompare(join(srcClaude, 'settings.json'));
+      const blockedLocalSettings = normalizeForCompare(join(srcClaude, 'settings.local.json'));
+      cpSync(srcClaude, dstClaude, {
+        recursive: true,
+        force: true,
+        filter(src) {
+          const norm = normalizeForCompare(src);
+          return norm !== blockedSettings && norm !== blockedLocalSettings;
+        },
+      });
+    } else {
+      mkdirSync(dstClaude, { recursive: true });
+    }
+
+    // 2. Copy AGENTS.md
+    const srcAgents = join(resolvedPrimary, 'AGENTS.md');
+    if (existsSync(srcAgents)) {
+      cpSync(srcAgents, join(targetPath, 'AGENTS.md'), { force: true });
+    }
+
+    // 3. Copy CLAUDE.md (constitution only + clean # Project template)
+    const srcClaudeMd = join(resolvedPrimary, 'CLAUDE.md');
+    if (existsSync(srcClaudeMd)) {
+      const raw = readFileSync(srcClaudeMd, 'utf8').replace(/\r\n/g, '\n');
+      const head = raw.split(/^# Project[ \t]*$/m)[0].trimEnd();
+      const nextClaudeMd = head ? `${head}\n\n${CLAUDE_PROJECT_TEMPLATE}` : CLAUDE_PROJECT_TEMPLATE;
+      writeFileAtomic(join(targetPath, 'CLAUDE.md'), nextClaudeMd);
+    }
+
+    // 4. Copy scripts/
+    const srcScripts = join(resolvedPrimary, 'scripts');
+    const dstScripts = join(targetPath, 'scripts');
+    if (existsSync(srcScripts)) {
+      cpSync(srcScripts, dstScripts, {
+        recursive: true,
+        force: true,
+        filter(src) {
+          const base = basename(src);
+          return base !== 'node_modules' && !base.endsWith('.tmp');
+        },
+      });
+    } else {
+      mkdirSync(dstScripts, { recursive: true });
+    }
+
+    // 5. Create clean .specs/ skeleton (never copying .specs/logs/* or existing tasks)
+    for (const sub of ['tasks', 'docs', 'logs', 'harness']) {
+      mkdirSync(join(targetPath, '.specs', sub), { recursive: true });
+    }
+
+    // 6. Ensure .gitignore includes harness ignore entries
+    const gitignorePath = join(targetPath, '.gitignore');
+    const existingLines = existsSync(gitignorePath)
+      ? readFileSync(gitignorePath, 'utf8').replace(/\r\n/g, '\n').split('\n')
+      : [];
+    const nextLines = existingLines.filter((line, idx) => !(idx === existingLines.length - 1 && line === ''));
+    for (const entry of HARNESS_GITIGNORE_ENTRIES) {
+      if (!nextLines.includes(entry)) {
+        nextLines.push(entry);
+      }
+    }
+    writeFileAtomic(gitignorePath, `${nextLines.join('\n')}\n`);
+
+    // 7. Sync Multi-AI adapters (Claude, Antigravity, Codex, Cursor)
+    return syncAdapters(targetPath, { skipCliCheck: true });
+  }
+
+  /**
+   * Creates a new project folder directly inside `workspacesDir` with optional
+   * Git initialization, optional italac-harness installation + Multi-AI adapter sync,
+   * and optional immediate workspace switch.
+   *
+   * @param {{
+   *   name: string,
+   *   initGit?: boolean,
+   *   installHarness?: boolean,
+   *   openAfterCreate?: boolean,
+   * }} [createOptions]
+   */
+  function createWorkspace(createOptions = {}) {
+    const safeName = validateNewWorkspaceName(createOptions?.name);
+    const shouldInitGit = Boolean(createOptions?.initGit);
+    const shouldInstallHarness = Boolean(createOptions?.installHarness);
+    const shouldOpenAfterCreate = Boolean(createOptions?.openAfterCreate);
+
+    mkdirSync(resolvedWorkspacesDir, { recursive: true });
+
+    const targetPath = resolve(resolvedWorkspacesDir, safeName);
+    if (
+      !isStrictChildPath(resolvedWorkspacesDir, targetPath) ||
+      normalizeForCompare(dirname(targetPath)) !== normalizeForCompare(resolvedWorkspacesDir)
+    ) {
+      throw new StoreError(
+        'PATH_TRAVERSAL',
+        'Caminho fora do diretório de workspaces bloqueado.',
+        403,
+      );
+    }
+
+    let alreadyExists = existsSync(targetPath);
+    if (!alreadyExists) {
+      try {
+        lstatSync(targetPath);
+        alreadyExists = true;
+      } catch {
+        alreadyExists = false;
+      }
+    }
+    if (alreadyExists) {
+      throw new StoreError(
+        'WORKSPACE_EXISTS',
+        `Já existe um workspace com o nome "${safeName}".`,
+        409,
+      );
+    }
+
+    try {
+      mkdirSync(targetPath, { recursive: false });
+    } catch (err) {
+      if (err?.code === 'EEXIST') {
+        throw new StoreError(
+          'WORKSPACE_EXISTS',
+          `Já existe um workspace com o nome "${safeName}".`,
+          409,
+        );
+      }
+      throw new StoreError(
+        'WORKSPACE_CREATE_FAILED',
+        `Não foi possível criar a pasta do projeto: ${err?.message || 'erro desconhecido'}`,
+        500,
+      );
+    }
+
+    const realBase = getSafeRealBase();
+    const realTarget = realpathSync(targetPath);
+    if (!isStrictChildPath(realBase, realTarget)) {
+      throw new StoreError(
+        'PATH_TRAVERSAL',
+        'Caminho fora do diretório de workspaces bloqueado.',
+        403,
+      );
+    }
+
+    let initializedGit = false;
+    let gitWarning = null;
+    if (shouldInitGit) {
+      try {
+        execFileSync('git', ['init'], {
+          cwd: targetPath,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+          timeout: 10000,
+        });
+        initializedGit = true;
+      } catch (err) {
+        initializedGit = false;
+        gitWarning =
+          err?.code === 'ENOENT'
+            ? 'Git não encontrado no PATH; pasta criada sem repositório Git.'
+            : `Falha ao inicializar Git: ${err?.message || 'erro desconhecido'}`;
+      }
+    }
+
+    let installedHarness = false;
+    let adaptersSync = null;
+    if (shouldInstallHarness) {
+      adaptersSync = installHarnessIntoTarget(targetPath);
+      installedHarness = true;
+    }
+
+    let workspace = inspectWorkspace(safeName, targetPath);
+    let context = null;
+
+    if (shouldOpenAfterCreate) {
+      const selected = selectWorkspace(safeName);
+      workspace = selected.workspace;
+      context = selected.context;
+    }
+
+    return {
+      workspace,
+      context,
+      installedHarness,
+      initializedGit,
+      ...(gitWarning ? { gitWarning } : {}),
+      ...(adaptersSync ? { adaptersSync } : {}),
+    };
+  }
+
   function stopAll(reason = 'Servidor encerrado') {
     for (const ctx of contexts.values()) {
       try {
@@ -411,6 +708,7 @@ export function createWorkspaceManager(options = {}) {
     getActiveWorkspace,
     getActiveContext,
     selectWorkspace,
+    createWorkspace,
     stopAll,
   };
 }

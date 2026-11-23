@@ -2599,6 +2599,7 @@ export function renderCommandPalette(state, ui) {
 
   const actions = [
     { id: 'act:new-task', group: 'Ações rápidas', label: 'Nova tarefa', hint: 'N' },
+    { id: 'act:new-workspace', group: 'Ações rápidas', label: 'Novo projeto / workspace', hint: 'Criar pasta', searchText: 'novo projeto workspace criar pasta git italac-harness' },
     { id: 'act:new-calendar-event', group: 'Privado', label: 'Novo item no Calendário & Rotina', hint: 'Calendário', searchText: 'novo evento prazo estudo rotina privado' },
     { id: 'act:run-gates', group: 'Ações rápidas', label: 'Rodar todos os Gates', hint: 'gate.mjs' },
     { id: 'act:sync-adapters', group: 'Ações rápidas', label: 'Sincronizar todas as IAs', hint: 'Multi-AI' },
@@ -2608,7 +2609,12 @@ export function renderCommandPalette(state, ui) {
   ];
 
   const activeWsId = state.workspace?.id || '';
-  const wsItems = (state.workspaces || []).slice(0, 20).map((ws) => ({
+  const mergedWorkspaces = getMergedWorkspaces(state).sort((a, b) => {
+    if (a.id === activeWsId) return -1;
+    if (b.id === activeWsId) return 1;
+    return String(a.name || a.id).localeCompare(String(b.name || b.id));
+  });
+  const wsItems = mergedWorkspaces.slice(0, 20).map((ws) => ({
     id: `ws:${ws.id}`,
     group: 'Trocar Projeto',
     label: ws.name || ws.id,
@@ -3267,16 +3273,32 @@ export const WORKSPACE_FILTERS = [
   { id: 'running', label: 'Em Execução' },
 ];
 
+function getMergedWorkspaces(state) {
+  const list = Array.isArray(state.workspaces) ? [...state.workspaces] : [];
+  const activeWs = state.workspace || null;
+  if (activeWs && activeWs.id && !list.some((w) => w.id === activeWs.id)) {
+    list.unshift(activeWs);
+  }
+  return list;
+}
+
 export function renderWorkspaceDropdownList(state, ui) {
-  const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+  const workspaces = getMergedWorkspaces(state);
   const activeId = state.workspace?.id || '';
   const query = (ui.wsDropdownQuery || '').trim().toLowerCase();
   const switchingId = ui.switchingWorkspaceId || null;
 
-  const filtered = workspaces.filter((ws) => {
-    if (!query) return true;
-    return `${ws.name || ''} ${ws.id || ''} ${ws.gitBranch || ''} ${ws.path || ''}`.toLowerCase().includes(query);
-  });
+  const filtered = workspaces
+    .filter((ws) => {
+      if (!query) return true;
+      return `${ws.name || ''} ${ws.id || ''} ${ws.gitBranch || ''} ${ws.path || ''}`.toLowerCase().includes(query);
+    })
+    .sort((a, b) => {
+      if (a.id === activeId) return -1;
+      if (b.id === activeId) return 1;
+      if ((b.activeRunCount || 0) !== (a.activeRunCount || 0)) return (b.activeRunCount || 0) - (a.activeRunCount || 0);
+      return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    });
 
   if (workspaces.length === 0) {
     return `<div class="ws-dropdown-empty">Nenhum projeto detectado</div>`;
@@ -3317,7 +3339,7 @@ export function renderWorkspaceDropdownList(state, ui) {
               isSwitching
                 ? icon('spinner', 13, 'spin')
                 : isActive
-                ? `<span class="ws-active-check" aria-label="Ativo">${icon('check', 13)}</span>`
+                ? `<span class="badge badge-accent ws-dropdown-active-pill">Ativo</span>`
                 : ''
             }
           </span>
@@ -3328,7 +3350,7 @@ export function renderWorkspaceDropdownList(state, ui) {
 }
 
 export function renderWorkspacesView(state, ui) {
-  const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+  const workspaces = getMergedWorkspaces(state);
   const activeWs = state.workspace || null;
   const activeId = activeWs?.id || '';
   const workspacesDir = state.workspacesDir || 'C:\\Estudos';
@@ -3363,6 +3385,8 @@ export function renderWorkspacesView(state, ui) {
     return String(a.name || a.id).localeCompare(String(b.name || b.id));
   });
 
+  const writeDisabled = ui.disconnected ? 'disabled' : '';
+
   return `
     <div class="ws-view">
       <!-- Header -->
@@ -3375,6 +3399,10 @@ export function renderWorkspacesView(state, ui) {
           <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces" ${ui.workspacesLoading ? 'disabled' : ''}>
             ${icon(ui.workspacesLoading ? 'spinner' : 'refresh', 13, ui.workspacesLoading ? 'spin' : '')}
             <span>Atualizar lista</span>
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" data-action="open-new-workspace" data-write-control="true" ${writeDisabled}>
+            ${icon('plus', 14)}
+            <span>Novo projeto</span>
           </button>
         </div>
       </div>
@@ -3472,7 +3500,10 @@ export function renderWorkspacesGridContent(sorted, { activeId, switchingId, loa
         ${
           hasFilter
             ? `<button type="button" class="btn btn-secondary btn-sm" data-action="clear-ws-filters">Limpar filtros</button>`
-            : `<button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces">${icon('refresh', 13)} Atualizar</button>`
+            : `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+                 <button type="button" class="btn btn-primary btn-sm" data-action="open-new-workspace">${icon('plus', 14)} Novo projeto</button>
+                 <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces">${icon('refresh', 13)} Atualizar</button>
+               </div>`
         }
       </div>
     `;
@@ -3544,5 +3575,79 @@ export function renderWorkspacesGridContent(sorted, { activeId, switchingId, loa
         })
         .join('')}
     </div>
+  `;
+}
+
+export function renderNewWorkspaceModal(state) {
+  const baseDir = String(state.workspacesDir || 'C:\\Estudos').replace(/[\\/]+$/, '');
+  const sep = baseDir.includes('/') && !baseDir.includes('\\') ? '/' : '\\';
+
+  return `
+    <form class="modal ws-new-modal" id="form-new-workspace" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title">${icon('folder', 18)} Novo projeto</h2>
+        <button type="button" class="btn btn-ghost btn-icon" data-action="close-modal" aria-label="Fechar">${icon('x', 16)}</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label class="field-label" for="ws-new-name">Nome do projeto / pasta</label>
+          <input
+            id="ws-new-name"
+            name="name"
+            type="text"
+            class="input"
+            placeholder="ex.: meu-servico-api"
+            required
+            autocomplete="off"
+            spellcheck="false"
+            data-autofocus="true"
+            data-ws-new-name="true"
+            data-base-dir="${escapeHtml(baseDir)}"
+            data-path-sep="${escapeHtml(sep)}"
+          />
+          <div class="ws-path-preview mono" id="ws-new-path-preview" aria-live="polite">
+            <span class="ws-path-preview-label">Caminho:</span>
+            <span class="ws-path-preview-value">${escapeHtml(baseDir)}${escapeHtml(sep)}<span class="ws-path-preview-placeholder">&lt;nome&gt;</span></span>
+          </div>
+        </div>
+
+        <fieldset class="ws-options-fieldset">
+          <legend class="field-label">Configuração inicial</legend>
+
+          <label class="ws-check-row">
+            <input type="checkbox" name="initGit" checked />
+            <span class="ws-check-content">
+              <span class="ws-check-title">Inicializar Git (<code class="mono">git init</code>)</span>
+              <span class="ws-check-desc">Cria o repositório Git local na pasta do projeto.</span>
+            </span>
+          </label>
+
+          <label class="ws-check-row">
+            <input type="checkbox" name="installHarness" checked />
+            <span class="ws-check-content">
+              <span class="ws-check-title">Configurar <code class="mono">italac-harness</code> neste projeto</span>
+              <span class="ws-check-desc">Instala regras, agentes, scripts de validação e adaptadores Multi-AI.</span>
+            </span>
+          </label>
+
+          <label class="ws-check-row">
+            <input type="checkbox" name="openAfterCreate" checked />
+            <span class="ws-check-content">
+              <span class="ws-check-title">Abrir projeto ao criar</span>
+              <span class="ws-check-desc">Alterna o painel imediatamente para o novo ambiente.</span>
+            </span>
+          </label>
+        </fieldset>
+
+        <div class="ws-modal-error" id="ws-new-error" role="alert" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-modal" id="btn-cancel-new-workspace">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="btn-submit-new-workspace">
+          ${icon('plus', 14)}
+          <span>Criar projeto</span>
+        </button>
+      </div>
+    </form>
   `;
 }

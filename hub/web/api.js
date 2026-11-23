@@ -28,7 +28,7 @@ async function request(path, options = {}) {
   try {
     res = await fetch(path, init);
   } catch (err) {
-    throw new ApiError('Sem conexão com o servidor local do Harness Hub (127.0.0.1).', {
+    throw new ApiError('Sem conexão com o servidor local do italac-harness (127.0.0.1).', {
       status: 0,
       code: 'NETWORK_ERROR',
       details: err?.message || String(err),
@@ -153,6 +153,10 @@ export const api = {
 
   getWorkspaces() {
     return request('/api/workspaces');
+  },
+
+  createWorkspace(payload) {
+    return request('/api/workspaces', { method: 'POST', body: payload });
   },
 
   selectWorkspace(id) {

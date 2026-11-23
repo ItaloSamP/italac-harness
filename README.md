@@ -1,4 +1,4 @@
-# workflow — time de agentes para vibe coding
+# italac-harness — time de agentes para vibe coding
 
 Harness de agentes para Claude Code: um **Maestro** (a thread principal) + 14 especialistas + 33 skills + 12 regras. Você manda um prompt; o time amplia, planeja, constrói, revisa, testa e entrega — perguntando só o que é decisão sua.
 

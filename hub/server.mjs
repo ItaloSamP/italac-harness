@@ -495,9 +495,50 @@ export function createServer(options = {}) {
     }
 
     try {
-      // ---- Multi-Workspace Discovery & Switching ----
+      // ---- Multi-Workspace Discovery, Creation & Switching ----
       if (method === 'GET' && pathname === '/api/workspaces') {
         sendJson(res, 200, { ok: true, ...workspaceManager.listWorkspaces() });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/workspaces') {
+        const body = await readJsonBody(req);
+        const openAfterCreate = body.openAfterCreate === true;
+        const created = workspaceManager.createWorkspace({
+          name: body.name,
+          initGit: Boolean(body.initGit),
+          installHarness: Boolean(body.installHarness),
+          openAfterCreate,
+        });
+
+        if (openAfterCreate && created.context) {
+          attachWatcher(created.context.store);
+        }
+
+        const state = buildFullState();
+        const activeWs = state.workspace;
+
+        sse.broadcast('workspace:changed', {
+          id: activeWs.id,
+          name: activeWs.name,
+          path: activeWs.path,
+          workspace: activeWs,
+          createdWorkspace: created.workspace,
+          opened: openAfterCreate,
+        });
+        sse.broadcast('state:changed', {
+          reason: 'workspace_created',
+          workspaceId: created.workspace.id,
+        });
+
+        sendJson(res, 201, {
+          ok: true,
+          workspace: created.workspace,
+          installedHarness: created.installedHarness,
+          initializedGit: created.initializedGit,
+          ...(created.gitWarning ? { gitWarning: created.gitWarning } : {}),
+          state,
+        });
         return;
       }
 

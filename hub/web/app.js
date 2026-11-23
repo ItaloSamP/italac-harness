@@ -24,6 +24,7 @@ import {
   renderCalendarEventModal,
   renderWorkspaceDropdownList,
   renderWorkspacesView,
+  renderNewWorkspaceModal,
   renderExecConsole,
   renderTaskDrawer,
   renderNewTaskModal,
@@ -253,7 +254,7 @@ function updateChrome() {
     else btn.removeAttribute('aria-current');
   });
 
-  el.topbarTitle.textContent = VIEW_TITLES[ui.view] || 'Harness Hub';
+  el.topbarTitle.textContent = VIEW_TITLES[ui.view] || 'italac-harness';
   const activeWs = state.workspace || null;
   const repoName =
     activeWs?.name ||
@@ -271,7 +272,10 @@ function updateChrome() {
     el.wsSwitcherBranch.textContent = branchName || (activeWs ? 'local' : 'main');
   }
   if (el.navBadgeWorkspaces) {
-    el.navBadgeWorkspaces.textContent = String((state.workspaces || []).length);
+    const wsList = Array.isArray(state.workspaces) ? state.workspaces : [];
+    const hasActiveInList = activeWs?.id ? wsList.some((w) => w.id === activeWs.id) : true;
+    const wsTotal = wsList.length + (activeWs?.id && !hasActiveInList ? 1 : 0);
+    el.navBadgeWorkspaces.textContent = String(wsTotal);
   }
   if (ui.wsDropdownOpen && el.wsSwitcherList) {
     el.wsSwitcherList.innerHTML = renderWorkspaceDropdownList(state, ui);
@@ -1545,6 +1549,10 @@ document.addEventListener('click', async (e) => {
         closeWsDropdown();
         navigate('workspaces');
         break;
+      case 'open-new-workspace':
+        closeWsDropdown();
+        if (!ui.disconnected) openModal(renderNewWorkspaceModal(state));
+        break;
       case 'select-workspace':
         await handleSelectWorkspace(actionEl.getAttribute('data-ws-id'));
         break;
@@ -1733,6 +1741,26 @@ document.addEventListener('input', (e) => {
     }
     return;
   }
+  if (e.target.hasAttribute('data-ws-new-name')) {
+    const raw = e.target.value.trim();
+    const baseDir = e.target.getAttribute('data-base-dir') || 'C:\\Estudos';
+    const sep = e.target.getAttribute('data-path-sep') || '\\';
+    const previewEl = document.getElementById('ws-new-path-preview');
+    if (previewEl) {
+      const valueEl = previewEl.querySelector('.ws-path-preview-value');
+      if (valueEl) {
+        valueEl.innerHTML = raw
+          ? `${escapeHtml(baseDir)}${escapeHtml(sep)}<strong class="ws-path-preview-name">${escapeHtml(raw)}</strong>`
+          : `${escapeHtml(baseDir)}${escapeHtml(sep)}<span class="ws-path-preview-placeholder">&lt;nome&gt;</span>`;
+      }
+    }
+    const errEl = document.getElementById('ws-new-error');
+    if (errEl && !errEl.hidden) {
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+    return;
+  }
   if (e.target.hasAttribute('data-console-search')) {
     ui.consoleSearch = e.target.value;
     renderConsole();
@@ -1873,6 +1901,89 @@ document.addEventListener('submit', async (e) => {
     return;
   }
 
+  if (e.target.id === 'form-new-workspace') {
+    e.preventDefault();
+    const form = e.target;
+    const fd = new FormData(form);
+    const name = String(fd.get('name') || '').trim();
+    const initGit = fd.get('initGit') === 'on';
+    const installHarness = fd.get('installHarness') === 'on';
+    const openAfterCreate = fd.get('openAfterCreate') === 'on';
+    const errEl = document.getElementById('ws-new-error');
+    const nameInput = document.getElementById('ws-new-name');
+    const submitBtn = document.getElementById('btn-submit-new-workspace');
+    const cancelBtn = document.getElementById('btn-cancel-new-workspace');
+
+    const showInlineError = (msg) => {
+      if (errEl) {
+        errEl.textContent = msg;
+        errEl.hidden = false;
+      }
+      if (nameInput) nameInput.focus();
+    };
+
+    if (!name) {
+      showInlineError('Informe o nome do projeto / pasta.');
+      return;
+    }
+
+    if (errEl) {
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+
+    const controls = [...form.querySelectorAll('input, button')];
+    controls.forEach((ctrl) => { ctrl.disabled = true; });
+    if (submitBtn) {
+      submitBtn.innerHTML = `${icon('spinner', 14, 'spin')}<span>Criando projeto…</span>`;
+    }
+
+    try {
+      const res = await api.createWorkspace({
+        name,
+        initGit,
+        installHarness,
+        openAfterCreate,
+      });
+      closeModal();
+      if (openAfterCreate) {
+        closeDrawers();
+        ui.github.loaded = false;
+        ui.calendar.loaded = false;
+      }
+      if (res?.state && typeof res.state === 'object') {
+        Object.assign(state, res.state);
+      }
+      if (openAfterCreate && res?.workspace) {
+        state.workspace = res.workspace;
+      }
+
+      const tags = [];
+      if (res?.initializedGit) tags.push('Git');
+      if (res?.installedHarness) tags.push('italac-harness');
+      const wsLabel = res?.workspace?.name || name;
+      const details = tags.length > 0 ? `${wsLabel} · ${tags.join(' + ')}` : wsLabel;
+      showToast('Projeto criado', details, { type: 'success' });
+
+      await Promise.all([
+        loadWorkspaces({ silent: true }),
+        fetchState({ silent: true }),
+      ]);
+      if (openAfterCreate) {
+        loadGithubIssues();
+        loadCalendar({ silent: true });
+      }
+    } catch (err) {
+      controls.forEach((ctrl) => { ctrl.disabled = false; });
+      if (cancelBtn) cancelBtn.disabled = false;
+      if (submitBtn) {
+        submitBtn.innerHTML = `${icon('plus', 14)}<span>Criar projeto</span>`;
+      }
+      showInlineError(err?.message || 'Não foi possível criar o projeto.');
+    }
+    return;
+  }
+
   if (e.target.id === 'form-cal-quick-add' || e.target.id === 'form-cal-modal-add') {
     e.preventDefault();
     const isModal = e.target.id === 'form-cal-modal-add';
@@ -1922,6 +2033,8 @@ function executePaletteCommand(cmdId) {
     openTaskDrawer(cmdId.slice(5));
   } else if (cmdId === 'act:new-task') {
     openModal(renderNewTaskModal(state));
+  } else if (cmdId === 'act:new-workspace') {
+    if (!ui.disconnected) openModal(renderNewWorkspaceModal(state));
   } else if (cmdId === 'act:new-calendar-event') {
     navigate('calendar');
     openModal(renderCalendarEventModal(ui));
