@@ -74,6 +74,7 @@ const ui = {
   theme: loadPref('harness-hub-theme', 'dark'),
   sidebarCollapsed: loadPref('harness-hub-sidebar-collapsed', 'false') === 'true',
   kanbanMode: loadPref('harness-hub-kanban-mode', 'dual'),
+  accordions: loadJsonPref('harness-hub-accordions', {}),
   kanbanFilters: { quick: 'all', agent: '', priority: '', tier: '', engine: '' },
   quickCreateLane: null,
   showClosed: false,
@@ -141,6 +142,45 @@ function savePref(key, value) {
     localStorage.setItem(key, String(value));
   } catch {
     // ignore
+  }
+}
+
+function loadJsonPref(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJsonPref(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
+
+function setAccordionState(id, isOpen) {
+  if (!id) return;
+  if (!ui.accordions || typeof ui.accordions !== 'object') {
+    ui.accordions = {};
+  }
+  ui.accordions[id] = Boolean(isOpen);
+  saveJsonPref('harness-hub-accordions', ui.accordions);
+}
+
+function toggleAccordion(id, currentOpen) {
+  if (!id) return;
+  setAccordionState(id, !currentOpen);
+  renderView();
+  // Preserve keyboard focus on the toggled button after re-render
+  const nextBtn = el.main.querySelector(`[data-action="toggle-accordion"][data-accordion-id="${CSS.escape(id)}"]`);
+  if (nextBtn && typeof nextBtn.focus === 'function') {
+    nextBtn.focus({ preventScroll: true });
   }
 }
 
@@ -1270,7 +1310,14 @@ document.addEventListener('click', async (e) => {
       case 'toggle-autorun':
         await toggleAutoRun();
         break;
+      case 'toggle-accordion': {
+        const accId = actionEl.getAttribute('data-accordion-id');
+        const wasOpen = actionEl.getAttribute('data-accordion-open') === 'true' || actionEl.getAttribute('aria-expanded') === 'true';
+        toggleAccordion(accId, wasOpen);
+        break;
+      }
       case 'jump-gates':
+        setAccordionState('mc-gates', true);
         navigate('mission');
         setTimeout(() => document.getElementById('mc-gates-panel')?.scrollIntoView({ behavior: 'smooth' }), 60);
         break;

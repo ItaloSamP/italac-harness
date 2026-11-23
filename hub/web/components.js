@@ -327,6 +327,60 @@ function getPlatformStatusInfo(platform) {
 }
 
 /* ==========================================================================
+   Reusable Collapsible Section ("Gaveta") — Progressive Disclosure
+   ========================================================================== */
+
+export function isAccordionOpen(ui, id, defaultOpen = false) {
+  if (ui?.accordions && Object.prototype.hasOwnProperty.call(ui.accordions, id)) {
+    return Boolean(ui.accordions[id]);
+  }
+  return Boolean(defaultOpen);
+}
+
+function renderAccordion({
+  id,
+  title,
+  subtitle = '',
+  iconName = '',
+  badgesHtml = '',
+  actionsHtml = '',
+  bodyHtml = '',
+  open = false,
+  domId = '',
+  className = '',
+}) {
+  const safeId = escapeHtml(id);
+  const panelId = `acc-panel-${safeId}`;
+  return `
+    <section class="hub-accordion ${open ? 'is-open' : ''}${className ? ` ${escapeHtml(className)}` : ''}" ${domId ? `id="${escapeHtml(domId)}"` : ''} data-accordion="${safeId}">
+      <div class="hub-accordion-head">
+        <button
+          type="button"
+          class="hub-accordion-trigger"
+          data-action="toggle-accordion"
+          data-accordion-id="${safeId}"
+          data-accordion-open="${open ? 'true' : 'false'}"
+          aria-expanded="${open ? 'true' : 'false'}"
+          aria-controls="${panelId}"
+        >
+          <span class="hub-accordion-chevron" aria-hidden="true">${icon('chevron-right', 15)}</span>
+          ${iconName ? `<span class="hub-accordion-icon" aria-hidden="true">${icon(iconName, 15)}</span>` : ''}
+          <span class="hub-accordion-heading">
+            <span class="hub-accordion-title">${escapeHtml(title)}</span>
+            ${subtitle ? `<span class="hub-accordion-sub">${escapeHtml(subtitle)}</span>` : ''}
+          </span>
+          ${badgesHtml ? `<span class="hub-accordion-badges">${badgesHtml}</span>` : ''}
+        </button>
+        ${actionsHtml ? `<div class="hub-accordion-actions">${actionsHtml}</div>` : ''}
+      </div>
+      <div class="hub-accordion-body" id="${panelId}" ${open ? '' : 'hidden'}>
+        ${bodyHtml}
+      </div>
+    </section>
+  `;
+}
+
+/* ==========================================================================
    View 1: Mission Control
    ========================================================================== */
 
@@ -348,9 +402,20 @@ export function renderMissionControl(state, ui) {
   const acPct = acTotal > 0 ? Math.round((acDone / acTotal) * 100) : 0;
 
   const anyGateFail = gates.some((g) => g.status === 'fail');
-  const allGatesPass = gates.length > 0 && gates.every((g) => g.status === 'pass');
+  const passGateCount = gates.filter((g) => g.status === 'pass').length;
+  const allGatesPass = gates.length > 0 && passGateCount === gates.length;
   const gateSummaryLabel = anyGateFail ? 'FAIL' : allGatesPass ? 'PASS' : 'Aguardando';
   const gateSummaryClass = anyGateFail ? 'is-danger' : allGatesPass ? 'is-pass' : '';
+
+  const gatesPillHtml = anyGateFail
+    ? `<span class="badge badge-danger mono">FAIL ${passGateCount}/${gates.length}</span>`
+    : allGatesPass
+    ? `<span class="badge badge-pass mono">PASS ${passGateCount}/${gates.length}</span>`
+    : `<span class="badge badge-neutral mono">${passGateCount}/${gates.length}</span>`;
+
+  const mcGatesOpen = isAccordionOpen(ui, 'mc-gates', anyGateFail);
+  const mcIncidentsOpen = isAccordionOpen(ui, 'mc-incidents', (incidents.open || []).length > 0);
+  const mcActivityOpen = isAccordionOpen(ui, 'mc-activity', false);
 
   const countsByStatus = {
     PLANNING: 0,
@@ -557,15 +622,18 @@ export function renderMissionControl(state, ui) {
             }
           </section>
 
-          <!-- Saúde dos Gates -->
-          <section class="panel" id="mc-gates-panel" aria-label="Saúde dos Gates">
-            <div class="panel-header">
-              <h2 class="panel-title">${icon('check-circle', 16)} Saúde dos Gates</h2>
-              <button type="button" class="btn btn-secondary btn-sm" data-action="run-gates" ${ui.runningGate || ui.disconnected ? 'disabled' : ''}>
-                ${icon(ui.runningGate ? 'spinner' : 'play', 13, ui.runningGate ? 'spin' : '')} Rodar todos
-              </button>
-            </div>
-            ${
+          <!-- Gates de Qualidade (Gaveta) -->
+          ${renderAccordion({
+            id: 'mc-gates',
+            domId: 'mc-gates-panel',
+            title: 'Gates de Qualidade',
+            iconName: 'check-circle',
+            badgesHtml: gatesPillHtml,
+            open: mcGatesOpen,
+            actionsHtml: `<button type="button" class="btn btn-secondary btn-sm" data-action="run-gates" ${ui.runningGate || ui.disconnected ? 'disabled' : ''}>
+              ${icon(ui.runningGate ? 'spinner' : 'play', 13, ui.runningGate ? 'spin' : '')} Rodar todos
+            </button>`,
+            bodyHtml:
               gates.length === 0
                 ? `<div class="panel-body"><p class="panel-subtitle">Nenhum gate declarado em CLAUDE.md.</p></div>`
                 : `<div style="overflow-x:auto;">
@@ -607,55 +675,50 @@ export function renderMissionControl(state, ui) {
                           .join('')}
                       </tbody>
                     </table>
-                  </div>`
-            }
-          </section>
+                  </div>`,
+          })}
         </div>
 
         <div class="mc-col">
-          <!-- Incidentes abertos -->
-          <section class="panel" aria-label="Incidentes abertos do harness">
-            <div class="panel-header">
-              <h2 class="panel-title">${icon('alert-triangle', 16)} Incidentes do Harness</h2>
-              <button type="button" class="btn btn-ghost btn-sm" data-nav-jump="agents">Ver todos</button>
-            </div>
-            <div class="panel-body" style="display:flex;flex-direction:column;gap:10px;">
-              <div style="display:flex;align-items:baseline;gap:12px;">
-                <span class="kpi-value ${incidents.open.length > 0 ? 'is-danger' : 'is-pass'}">${incidents.open.length}</span>
-                <span class="panel-subtitle">abertos · <strong class="mono">${incidents.fixedCount || 0}</strong> corrigidos</span>
-              </div>
-              ${
-                incidents.open.length === 0
-                  ? `<p class="panel-subtitle">Nenhum incidente aberto em <span class="mono">.specs/harness/incidents.jsonl</span>.</p>`
-                  : `<div class="live-list" style="margin:0 -16px -16px;border-top:1px solid var(--border-subtle);">
-                      ${incidents.open
-                        .slice(0, 3)
-                        .map(
-                          (inc) => `
-                        <div class="live-row">
-                          <div class="live-row-main">
-                            <div class="live-row-title mono" style="font-size:12px;">${escapeHtml(inc.key || inc.id || 'incidente')}</div>
-                            <div class="live-row-meta">
-                              <span class="badge badge-warn">${escapeHtml(inc.layer || 'harness')}</span>
-                              <span>${escapeHtml(inc.what || inc.summary || inc.description || '')}</span>
-                            </div>
+          <!-- Incidentes Recentes (Gaveta) -->
+          ${renderAccordion({
+            id: 'mc-incidents',
+            title: 'Incidentes Recentes',
+            iconName: 'alert-triangle',
+            badgesHtml: `<span class="badge ${(incidents.open || []).length > 0 ? 'badge-danger' : 'badge-pass'} mono">${(incidents.open || []).length} abertos</span>${incidents.fixedCount ? `<span class="badge badge-neutral mono">${incidents.fixedCount} resolvidos</span>` : ''}`,
+            open: mcIncidentsOpen,
+            actionsHtml: `<button type="button" class="btn btn-ghost btn-sm" data-nav-jump="agents">Ver todos</button>`,
+            bodyHtml:
+              (incidents.open || []).length === 0
+                ? `<div class="panel-body"><p class="panel-subtitle">Nenhum incidente aberto em <span class="mono">.specs/harness/incidents.jsonl</span>.</p></div>`
+                : `<div class="live-list">
+                    ${(incidents.open || [])
+                      .slice(0, 4)
+                      .map(
+                        (inc) => `
+                      <div class="live-row">
+                        <div class="live-row-main">
+                          <div class="live-row-title mono" style="font-size:12px;">${escapeHtml(inc.key || inc.id || 'incidente')}</div>
+                          <div class="live-row-meta">
+                            <span class="badge badge-warn">${escapeHtml(inc.layer || 'harness')}</span>
+                            <span>${escapeHtml(inc.what || inc.summary || inc.description || '')}</span>
                           </div>
                         </div>
-                      `
-                        )
-                        .join('')}
-                    </div>`
-              }
-            </div>
-          </section>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>`,
+          })}
 
-          <!-- Atividade recente -->
-          <section class="panel" aria-label="Atividade recente">
-            <div class="panel-header">
-              <h2 class="panel-title">${icon('radar', 16)} Atividade recente</h2>
-              <span class="panel-subtitle mono">${Math.min(activity.length, 20)} eventos</span>
-            </div>
-            ${
+          <!-- Atividade Recente (Gaveta) -->
+          ${renderAccordion({
+            id: 'mc-activity',
+            title: 'Atividade Recente',
+            iconName: 'radar',
+            badgesHtml: `<span class="badge badge-neutral mono">${Math.min(activity.length, 20)} eventos</span>`,
+            open: mcActivityOpen,
+            bodyHtml:
               activity.length === 0
                 ? `<div class="panel-body"><p class="panel-subtitle">Nenhuma atividade registrada ainda.</p></div>`
                 : `<div class="activity-feed">
@@ -674,9 +737,8 @@ export function renderMissionControl(state, ui) {
                     `
                       )
                       .join('')}
-                  </div>`
-            }
-          </section>
+                  </div>`,
+          })}
         </div>
       </div>
     </div>
@@ -1040,21 +1102,22 @@ export function renderKanban(state, ui) {
       </div>`
       : '';
 
-  const closedCollapsible = `
-    <details class="closed-section" ${filteredClosed.length > 0 && ui.showClosed ? 'open' : ''}>
-      <summary class="closed-summary">
-        <span>${icon('ban', 14)} Canceladas / Descartadas (${filteredClosed.length}) — o que escolhi não fazer</span>
-        <span class="mono" style="font-size:11px;color:var(--text-muted)">Clique para expandir</span>
-      </summary>
-      <div class="closed-grid">
-        ${
-          filteredClosed.length === 0
-            ? `<p class="panel-subtitle">Nenhuma tarefa cancelada ou supersedida.</p>`
-            : filteredClosed.map((t) => renderTaskCard(t, state, ui)).join('')
-        }
-      </div>
-    </details>
-  `;
+  const closedOpen = isAccordionOpen(ui, 'kanban-closed', Boolean(filteredClosed.length > 0 && ui.showClosed));
+  const closedCollapsible = renderAccordion({
+    id: 'kanban-closed',
+    title: 'Canceladas / Descartadas',
+    subtitle: 'O que você escolheu não fazer',
+    iconName: 'ban',
+    badgesHtml: `<span class="badge badge-neutral mono">${filteredClosed.length}</span>`,
+    open: closedOpen,
+    bodyHtml: `<div class="closed-grid" style="padding-top:12px;">
+      ${
+        filteredClosed.length === 0
+          ? `<p class="panel-subtitle">Nenhuma tarefa cancelada ou supersedida.</p>`
+          : filteredClosed.map((t) => renderTaskCard(t, state, ui)).join('')
+      }
+    </div>`,
+  });
 
   if (ui.kanbanMode === 'unified') {
     return `
@@ -1083,49 +1146,91 @@ export function renderKanban(state, ui) {
   // Dual-board default
   const planningTasksCount = filtered.filter((t) => ['planned', 'scheduled', 'to_fix'].includes(getTaskLane(t))).length;
   const execTasksCount = filtered.filter((t) => ['queued', 'in_progress', 'in_review', 'ready', 'done'].includes(getTaskLane(t))).length;
+  const planningOpen = isAccordionOpen(ui, 'kanban-planning', true);
+  const executionOpen = isAccordionOpen(ui, 'kanban-execution', true);
 
   return `
     ${toolbar}
     <div class="boards-stack">
       <!-- Quadro 1: Planejamento -->
-      <section class="board-section board-planning" aria-label="Quadro de Planejamento">
+      <section class="board-section board-planning ${planningOpen ? '' : 'is-collapsed'}" aria-label="Quadro de Planejamento">
         <div class="board-section-header">
-          <div class="board-section-title-group">
-            <h2 class="board-section-title">Planejamento — O que eu quero fazer</h2>
-            <span class="board-section-sub">${planningTasksCount} tarefas · Arraste livremente entre colunas ou para Execução</span>
+          <div class="board-section-head-left">
+            <button
+              type="button"
+              class="board-collapse-btn"
+              data-action="toggle-accordion"
+              data-accordion-id="kanban-planning"
+              data-accordion-open="${planningOpen ? 'true' : 'false'}"
+              aria-expanded="${planningOpen ? 'true' : 'false'}"
+              aria-controls="board-body-planning"
+              title="${planningOpen ? 'Recolher Quadro de Planejamento' : 'Expandir Quadro de Planejamento'}"
+              aria-label="${planningOpen ? 'Recolher Quadro de Planejamento' : 'Expandir Quadro de Planejamento'}"
+            >
+              <span class="board-collapse-chevron" aria-hidden="true">${icon('chevron-right', 15)}</span>
+            </button>
+            <div class="board-section-title-group">
+              <h2 class="board-section-title">Planejamento — O que eu quero fazer</h2>
+              <span class="badge badge-neutral mono">${planningTasksCount}</span>
+              <span class="board-section-sub">${planningOpen ? 'Arraste livremente entre colunas ou para Execução' : 'Recolhido · clique na seta para expandir'}</span>
+            </div>
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" data-action="open-quick-create" data-lane="planned" ${ui.disconnected ? 'disabled' : ''}>
-            ${icon('plus', 13)} Adição rápida
-          </button>
+          <div class="board-section-head-right">
+            <button type="button" class="btn btn-secondary btn-sm" data-action="open-quick-create" data-lane="planned" ${ui.disconnected ? 'disabled' : ''}>
+              ${icon('plus', 13)} Adição rápida
+            </button>
+          </div>
         </div>
-        <div class="kanban-columns">
-          ${PLANNING_LANES.map((col) => {
-            const cards = filtered.filter((t) => getTaskLane(t) === col.id);
-            return renderKanbanColumn(col, cards, state, ui, { allowQuickCreate: true });
-          }).join('')}
+        <div id="board-body-planning" ${planningOpen ? '' : 'hidden'}>
+          <div class="kanban-columns">
+            ${PLANNING_LANES.map((col) => {
+              const cards = filtered.filter((t) => getTaskLane(t) === col.id);
+              return renderKanbanColumn(col, cards, state, ui, { allowQuickCreate: true });
+            }).join('')}
+          </div>
         </div>
       </section>
 
       <!-- Quadro 2: Execução -->
-      <section class="board-section board-execution" aria-label="Quadro de Execução dos Agentes">
+      <section class="board-section board-execution ${executionOpen ? '' : 'is-collapsed'}" aria-label="Quadro de Execução dos Agentes">
         <div class="board-section-header">
-          <div class="board-section-title-group">
-            <h2 class="board-section-title">Execução — O que está sendo feito pelos agentes</h2>
-            <span class="board-section-sub">${execTasksCount} tarefas no pipeline vivo</span>
+          <div class="board-section-head-left">
+            <button
+              type="button"
+              class="board-collapse-btn"
+              data-action="toggle-accordion"
+              data-accordion-id="kanban-execution"
+              data-accordion-open="${executionOpen ? 'true' : 'false'}"
+              aria-expanded="${executionOpen ? 'true' : 'false'}"
+              aria-controls="board-body-execution"
+              title="${executionOpen ? 'Recolher Quadro de Execução' : 'Expandir Quadro de Execução'}"
+              aria-label="${executionOpen ? 'Recolher Quadro de Execução' : 'Expandir Quadro de Execução'}"
+            >
+              <span class="board-collapse-chevron" aria-hidden="true">${icon('chevron-right', 15)}</span>
+            </button>
+            <div class="board-section-title-group">
+              <h2 class="board-section-title">Execução — O que está sendo feito pelos agentes</h2>
+              <span class="badge badge-neutral mono">${execTasksCount}</span>
+              <span class="board-section-sub">${executionOpen ? 'Pipeline vivo de agentes' : 'Recolhido · clique na seta para expandir'}</span>
+            </div>
           </div>
-          ${
-            blockedAll.length > 0
-              ? `<button type="button" class="badge badge-pill badge-danger" data-action="set-quick-filter" data-filter="blocked">${icon('ban', 12)} Bloqueadas (${blockedAll.length})</button>`
-              : ''
-          }
+          <div class="board-section-head-right">
+            ${
+              blockedAll.length > 0
+                ? `<button type="button" class="badge badge-pill badge-danger" data-action="set-quick-filter" data-filter="blocked">${icon('ban', 12)} Bloqueadas (${blockedAll.length})</button>`
+                : ''
+            }
+          </div>
         </div>
-        <div class="kanban-columns">
-          ${EXECUTION_LANES.map((col) => {
-            const cards = filtered.filter((t) => getTaskLane(t) === col.id);
-            return renderKanbanColumn(col, cards, state, ui, { allowQuickCreate: col.id === 'queued' });
-          }).join('')}
+        <div id="board-body-execution" ${executionOpen ? '' : 'hidden'}>
+          <div class="kanban-columns">
+            ${EXECUTION_LANES.map((col) => {
+              const cards = filtered.filter((t) => getTaskLane(t) === col.id);
+              return renderKanbanColumn(col, cards, state, ui, { allowQuickCreate: col.id === 'queued' });
+            }).join('')}
+          </div>
+          ${blockedStrip}
         </div>
-        ${blockedStrip}
       </section>
 
       ${closedCollapsible}
@@ -1574,114 +1679,190 @@ export function renderScheduleView(state, ui) {
    View 6: Agentes & Incidentes
    ========================================================================== */
 
-export function renderAgentsView(state) {
+export function renderAgentsView(state, ui = {}) {
   const roster = state.roster || [];
-  const incidents = state.incidents || { open: [], fixedCount: 0 };
+  const incidents = state.incidents || { open: [], fixed: [], fixedCount: 0 };
+  const openIncidents = Array.isArray(incidents.open) ? incidents.open : [];
+  const fixedIncidents = Array.isArray(incidents.fixed) ? incidents.fixed : [];
+  const fixedCount = incidents.fixedCount ?? fixedIncidents.length;
   const activeRuns = state.activeRuns || [];
   const tasks = state.tasks || [];
 
+  const enrichedRoster = roster.map((agent) => {
+    const run = activeRuns.find((r) => r.agent === agent.name && r.status === 'running');
+    const isRunning = Boolean(run) || agent.status === 'active' || agent.status === 'running';
+    const isBlocked = agent.status === 'blocked';
+    const currentTask = tasks.find((t) => t.id === (run?.taskId || agent.currentTaskId));
+    return { agent, run, isRunning, isBlocked, currentTask };
+  });
+
+  const activeCount = enrichedRoster.filter((x) => x.isRunning).length;
+  const idleCount = Math.max(0, enrichedRoster.length - activeCount);
+
+  const rosterOpen = isAccordionOpen(ui, 'agents-roster', activeCount > 0);
+  const openIncOpen = isAccordionOpen(ui, 'agents-incidents-open', openIncidents.length > 0);
+  const fixedIncOpen = isAccordionOpen(ui, 'agents-incidents-fixed', false);
+
+  // Active agents first, then alphabetical/roster order
+  const sortedRoster = [
+    ...enrichedRoster.filter((x) => x.isRunning),
+    ...enrichedRoster.filter((x) => !x.isRunning && x.isBlocked),
+    ...enrichedRoster.filter((x) => !x.isRunning && !x.isBlocked),
+  ];
+
+  const sortedFixed = [...fixedIncidents].sort((a, b) =>
+    String(b.fixed || b.last || b.date || '').localeCompare(String(a.fixed || a.last || a.date || ''))
+  );
+
+  const rosterBody =
+    sortedRoster.length === 0
+      ? `<div class="panel-body"><p class="panel-subtitle">Nenhum agente encontrado em <span class="mono">AGENTS.md</span>.</p></div>`
+      : `<div class="agent-roster-list" role="list">
+          ${sortedRoster
+            .map(({ agent, isRunning, isBlocked, currentTask }) => {
+              const statusBadge = isRunning
+                ? `<span class="badge badge-running"><span class="pulse-dot"></span> Executando</span>`
+                : isBlocked
+                ? `<span class="badge badge-danger">${icon('ban', 11)} Bloqueado</span>`
+                : `<span class="badge badge-neutral">Ocioso</span>`;
+
+              const roleText = currentTask
+                ? `${agent.role || 'Especialista'} · ${currentTask.title}`
+                : agent.role || 'Especialista do time';
+
+              return `
+              <button type="button" class="agent-row ${isRunning ? 'is-running' : ''}" role="listitem" data-action="open-agent-drawer" data-agent="${escapeHtml(agent.name)}" title="Abrir histórico e detalhes de ${escapeHtml(agent.name)}">
+                <span class="agent-row-name mono">${escapeHtml(agent.name)}</span>
+                <span class="agent-row-role">${escapeHtml(roleText)}</span>
+                <span class="agent-row-status">
+                  ${statusBadge}
+                  <span class="agent-row-chevron" aria-hidden="true">${icon('chevron-right', 14)}</span>
+                </span>
+              </button>`;
+            })
+            .join('')}
+        </div>`;
+
+  const openIncBody =
+    openIncidents.length === 0
+      ? `<div class="panel-body"><p class="panel-subtitle">Nenhum incidente aberto em <span class="mono">.specs/harness/incidents.jsonl</span>.</p></div>`
+      : `<div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Chave</th>
+                <th>Camada</th>
+                <th>Descrição</th>
+                <th>Local</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${openIncidents
+                .map(
+                  (inc) => `
+                <tr>
+                  <td class="mono" style="font-size:11px;color:var(--text-muted);white-space:nowrap;">${escapeHtml(String(inc.last || inc.first || inc.ts || inc.date || '').slice(0, 10) || '—')}</td>
+                  <td class="mono" style="font-weight:600;">${escapeHtml(inc.key || inc.id || '—')}</td>
+                  <td><span class="badge badge-warn">${escapeHtml(inc.layer || 'harness')}</span></td>
+                  <td>${escapeHtml(inc.what || inc.summary || inc.description || inc.message || '')}</td>
+                  <td class="mono" style="font-size:11px;color:var(--text-muted)">${escapeHtml(inc.where || inc.location || inc.file || '—')}</td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>`;
+
+  const fixedIncBody =
+    sortedFixed.length === 0
+      ? `<div class="panel-body"><p class="panel-subtitle">${fixedCount > 0 ? `${fixedCount} incidentes corrigidos registrados no histórico.` : 'Nenhum incidente resolvido registrado.'}</p></div>`
+      : `<div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Corrigido</th>
+                <th>Chave</th>
+                <th>Camada</th>
+                <th>Correção / Descrição</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sortedFixed
+                .map(
+                  (inc) => `
+                <tr>
+                  <td class="mono" style="font-size:11px;color:var(--text-muted);white-space:nowrap;">${escapeHtml(String(inc.fixed || inc.last || inc.date || '').slice(0, 10) || '—')}</td>
+                  <td class="mono" style="font-weight:600;">${escapeHtml(inc.key || inc.id || '—')}</td>
+                  <td><span class="badge badge-neutral">${escapeHtml(inc.layer || 'harness')}</span></td>
+                  <td>${escapeHtml(inc.fix || inc.what || inc.summary || inc.description || '—')}</td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>`;
+
   return `
-    <div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);flex-wrap:wrap;gap:8px;">
-        <div>
-          <h2 style="font-size:var(--text-md);">Roster de Agentes (${roster.length})</h2>
-          <p class="panel-subtitle">Lido dinamicamente de <span class="mono">AGENTS.md</span> · Clique em um agente para ver o histórico</p>
+    <div class="agents-stack">
+      <!-- Compact Top Summary Bar -->
+      <div class="agents-summary-strip" aria-label="Resumo de agentes e incidentes">
+        <div class="agents-stat-chip">
+          <span class="agents-stat-label">Ativos</span>
+          <span class="agents-stat-val mono tabular ${activeCount > 0 ? 'is-running' : ''}">${activeCount}</span>
+        </div>
+        <div class="agents-stat-chip">
+          <span class="agents-stat-label">Ociosos</span>
+          <span class="agents-stat-val mono tabular">${idleCount}</span>
+        </div>
+        <div class="agents-stat-chip">
+          <span class="agents-stat-label">Incidentes Abertos</span>
+          <span class="agents-stat-val mono tabular ${openIncidents.length > 0 ? 'is-danger' : 'is-pass'}">${openIncidents.length}</span>
+        </div>
+        <div class="agents-stat-chip">
+          <span class="agents-stat-label">Resolvidos</span>
+          <span class="agents-stat-val mono tabular">${fixedCount}</span>
         </div>
       </div>
 
-      <div class="agents-grid">
-        ${roster
-          .map((agent) => {
-            const run = activeRuns.find((r) => r.agent === agent.name && r.status === 'running');
-            const isRunning = Boolean(run) || agent.status === 'active' || agent.status === 'running';
-            const isBlocked = agent.status === 'blocked';
-            const currentTask = tasks.find((t) => t.id === (run?.taskId || agent.currentTaskId));
+      <!-- Gaveta 1: Elenco de Agentes -->
+      ${renderAccordion({
+        id: 'agents-roster',
+        title: 'Elenco de Agentes',
+        subtitle: 'Clique em um especialista para ver histórico, modelo e governança',
+        iconName: 'users',
+        badgesHtml: `<span class="badge badge-neutral mono">${roster.length} especialistas</span>${
+          activeCount > 0
+            ? `<span class="badge badge-running"><span class="pulse-dot"></span> ${activeCount} ${activeCount === 1 ? 'ativo' : 'ativos'}</span>`
+            : ''
+        }`,
+        open: rosterOpen,
+        bodyHtml: rosterBody,
+      })}
 
-            const statusBadge = isRunning
-              ? `<span class="badge badge-running"><span class="pulse-dot"></span> Executando</span>`
-              : isBlocked
-              ? `<span class="badge badge-danger">${icon('ban', 11)} Bloqueado</span>`
-              : `<span class="badge badge-neutral">Idle</span>`;
+      <!-- Gaveta 2: Incidentes Abertos -->
+      ${renderAccordion({
+        id: 'agents-incidents-open',
+        title: 'Incidentes Abertos',
+        subtitle: openIncidents.length > 0 ? 'Falhas de harness pendentes de correção' : 'Nenhum bloqueio de harness aberto',
+        iconName: 'alert-triangle',
+        badgesHtml: `<span class="badge ${openIncidents.length > 0 ? 'badge-danger' : 'badge-pass'} mono">${openIncidents.length}</span>`,
+        open: openIncOpen,
+        bodyHtml: openIncBody,
+      })}
 
-            let govBadge = '';
-            if (agent.name === '@explorer' || agent.readOnly) {
-              govBadge = `<span class="badge badge-neutral">Somente leitura</span>`;
-            } else if (agent.name === '@code-reviewer' || agent.name === '@security-auditor') {
-              govBadge = `<span class="badge badge-info">Só relatórios</span>`;
-            } else if (agent.name === '@committer') {
-              govBadge = `<span class="badge badge-pass">${icon('lock', 11)} Único que comita</span>`;
-            }
-
-            return `
-            <button type="button" class="agent-card" data-action="open-agent-drawer" data-agent="${escapeHtml(agent.name)}">
-              <div class="agent-card-top">
-                <span class="agent-name">${escapeHtml(agent.name)}</span>
-                ${statusBadge}
-              </div>
-              <div class="agent-role">${escapeHtml(agent.role || 'Agente do time')}</div>
-              <div class="agent-meta-row">
-                <span class="badge badge-neutral mono">${escapeHtml(agent.model || 'inherit')}</span>
-                ${govBadge}
-              </div>
-              ${
-                currentTask
-                  ? `<div class="agent-current">
-                      <div style="font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(currentTask.title)}</div>
-                      <div class="mono" style="color:var(--text-muted)">${escapeHtml(run?.engine || currentTask.meta?.aiEngine || '')} ${run?.startedAt ? `· ${formatElapsed(run.startedAt)}` : ''}</div>
-                    </div>`
-                  : ''
-              }
-              <div class="agent-footer">
-                <span>Na fila: <strong>${agent.queueCount ?? 0}</strong></span>
-                <span>Agendado: <strong>${agent.scheduledCount ?? 0}</strong></span>
-              </div>
-            </button>`;
-          })
-          .join('')}
-      </div>
-
-      <!-- Incidents Panel -->
-      <section class="panel" aria-label="Incidentes do Harness">
-        <div class="panel-header">
-          <h2 class="panel-title">${icon('alert-triangle', 16)} Incidentes do Harness</h2>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <span class="badge ${incidents.open.length > 0 ? 'badge-danger' : 'badge-neutral'} mono">Abertos: ${incidents.open.length}</span>
-            <span class="badge badge-pass mono">Corrigidos: ${incidents.fixedCount || 0}</span>
-          </div>
-        </div>
-        ${
-          incidents.open.length === 0
-            ? `<div class="panel-body"><p class="panel-subtitle">Nenhum incidente aberto em <span class="mono">.specs/harness/incidents.jsonl</span>.</p></div>`
-            : `<div style="overflow-x:auto;">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Data</th>
-                      <th>Chave</th>
-                      <th>Camada</th>
-                      <th>Descrição</th>
-                      <th>Local</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${incidents.open
-                      .map(
-                        (inc) => `
-                      <tr>
-                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${escapeHtml(String(inc.last || inc.first || inc.ts || inc.date || '').slice(0, 10) || '—')}</td>
-                        <td class="mono" style="font-weight:600;">${escapeHtml(inc.key || inc.id || '—')}</td>
-                        <td><span class="badge badge-warn">${escapeHtml(inc.layer || 'harness')}</span></td>
-                        <td>${escapeHtml(inc.what || inc.summary || inc.description || inc.message || '')}</td>
-                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${escapeHtml(inc.where || inc.location || inc.file || '—')}</td>
-                      </tr>
-                    `
-                      )
-                      .join('')}
-                  </tbody>
-                </table>
-              </div>`
-        }
-      </section>
+      <!-- Gaveta 3: Histórico de Incidentes Resolvidos -->
+      ${renderAccordion({
+        id: 'agents-incidents-fixed',
+        title: 'Histórico de Incidentes Resolvidos',
+        subtitle: 'Registro histórico de correções aplicadas ao harness',
+        iconName: 'check-circle',
+        badgesHtml: `<span class="badge badge-pass mono">${fixedCount}</span>`,
+        open: fixedIncOpen,
+        bodyHtml: fixedIncBody,
+      })}
     </div>
   `;
 }
@@ -1693,16 +1874,101 @@ export function renderAgentsView(state) {
 export function renderAdaptersView(state, ui) {
   const adapters = state.adapters || { inParityCount: 0, total: 4, platforms: [], includesPromptAmplifier: true };
   const platforms = adapters.platforms || [];
-  const writeDisabled = ui.disconnected ? 'disabled' : '';
+  const canonicalOpen = isAccordionOpen(ui, 'adapters-canonical', false);
+
+  const hashRows = [];
+  if (adapters.canonicalHash) {
+    hashRows.push({
+      platform: 'Fonte Canônica',
+      path: 'CLAUDE.md + .claude/rules/*.md',
+      hash: adapters.canonicalHash,
+      state: 'in_parity',
+    });
+  }
+  for (const p of platforms) {
+    for (const f of p.files || []) {
+      const h = f.actualSha256 || f.canonicalSha256 || '';
+      if (h) {
+        hashRows.push({
+          platform: p.name || p.id,
+          path: f.path,
+          hash: h,
+          state: f.state || 'ok',
+        });
+      }
+    }
+  }
+
+  const canonicalDrawerBody = `
+    <div class="amplifier-drawer-body">
+      <div class="amplifier-grid">
+        <div class="amplifier-step">
+          <span class="amplifier-num">01 · UNASKED EXPERTISE</span>
+          <div class="amplifier-step-title">Especialista de topo</div>
+          <div class="amplifier-step-desc">O que um especialista sênior faria aqui que não foi pedido explicitamente?</div>
+        </div>
+        <div class="amplifier-step">
+          <span class="amplifier-num">02 · RAWEST MATERIAL</span>
+          <div class="amplifier-step-title">Fonte mais crua primeiro</div>
+          <div class="amplifier-step-desc">Qual fonte primária ler antes de propor? Código rodando, logs reais, erro real, schema.</div>
+        </div>
+        <div class="amplifier-step">
+          <span class="amplifier-num">03 · METHODS AND TOOLS</span>
+          <div class="amplifier-step-title">Métodos e ferramentas</div>
+          <div class="amplifier-step-desc">Quais técnicas e validadores nomeados aplicar (ex.: validate-task, gate.mjs, node --test)?</div>
+        </div>
+        <div class="amplifier-step">
+          <span class="amplifier-num">04 · EXTERNAL PROOF</span>
+          <div class="amplifier-step-title">Oráculo externo</div>
+          <div class="amplifier-step-desc">O que, além do agente ou do usuário, prova objetivamente que o resultado funciona?</div>
+        </div>
+      </div>
+
+      <div class="amplifier-footer">
+        <code class="mono">Amplified: &lt;tarefa reescrita&gt; · proof: &lt;oráculo&gt;</code>
+        <span style="color:#94A3B8;">Deeper, not bigger — aguça método, fontes e prova sem inflar escopo.</span>
+      </div>
+
+      ${
+        hashRows.length > 0
+          ? `<div class="adapters-hashes-block">
+              <div class="adapters-hashes-title">Hashes SHA-256 de Paridade</div>
+              <div style="overflow-x:auto;">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Plataforma</th>
+                      <th>Arquivo</th>
+                      <th>SHA-256</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${hashRows
+                      .map(
+                        (r) => `
+                      <tr>
+                        <td><strong>${escapeHtml(r.platform)}</strong></td>
+                        <td class="mono" style="font-size:11px;color:var(--text-secondary)">${escapeHtml(r.path)}</td>
+                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${escapeHtml(String(r.hash).slice(0, 20))}…</td>
+                      </tr>`
+                      )
+                      .join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>`
+          : ''
+      }
+    </div>
+  `;
 
   return `
-    <div>
+    <div class="adapters-stack">
       <div class="adapters-header">
         <div>
           <h2 style="font-size:var(--text-md);">Hub Multi-AI — Paridade &amp; Projeções</h2>
           <p class="panel-subtitle">
             <strong class="mono">${adapters.inParityCount}/${adapters.total}</strong> plataformas em paridade com a fonte canônica
-            ${adapters.canonicalHash ? `· Hash canônico <code class="mono">${escapeHtml(String(adapters.canonicalHash).slice(0, 12))}</code>` : ''}
           </p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -1720,48 +1986,42 @@ export function renderAdaptersView(state, ui) {
           .map((p) => {
             const st = getPlatformStatusInfo(p);
             const files = p.files || [];
+            const targetPaths =
+              files.length === 0
+                ? [{ path: 'CLAUDE.md + .claude/rules/*.md', badge: '<span class="badge badge-pass">canônica</span>' }]
+                : files.map((f) => {
+                    const fState = String(f.state || 'ok').toLowerCase();
+                    const fBadge =
+                      fState === 'in_parity' || fState === 'synced' || fState === 'ok'
+                        ? '<span class="badge badge-pass">synced</span>'
+                        : fState === 'missing'
+                        ? '<span class="badge badge-neutral">missing</span>'
+                        : `<span class="badge badge-warn">${f.manuallyEdited ? 'editado' : 'drifted'}</span>`;
+                    return { path: f.path, badge: fBadge };
+                  });
+
             return `
             <article class="adapter-card">
               <div class="adapter-card-head">
-                <div>
+                <div style="min-width:0;">
                   <div class="adapter-name">${escapeHtml(p.name || p.id)}</div>
-                  <div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px;">CLI: ${escapeHtml(p.binary || p.id)}</div>
+                  <div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+                    ${escapeHtml(p.binary || p.id)}${p.installed ? ` · ${p.version ? escapeHtml(p.version) : 'instalada'}` : ' · CLI ausente'}
+                  </div>
                 </div>
-                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
-                  <span class="badge badge-pill ${st.cls}">${icon(st.iconName, 12)} ${escapeHtml(st.label)}</span>
-                  <span class="badge ${p.installed ? 'badge-pass' : 'badge-neutral'}">
-                    ${p.installed ? `Instalada${p.version ? ` (${escapeHtml(p.version)})` : ''}` : 'Não instalada'}
-                  </span>
-                </div>
+                <span class="badge badge-pill ${st.cls}">${icon(st.iconName, 12)} ${escapeHtml(st.label)}</span>
               </div>
 
-              ${p.reason ? `<p class="panel-subtitle">${escapeHtml(p.reason)}</p>` : ''}
-
               <div class="adapter-files">
-                ${
-                  files.length === 0
-                    ? `<div class="adapter-file-row"><span class="mono">CLAUDE.md + .claude/rules/*.md</span><span class="badge badge-pass">Fonte canônica</span></div>`
-                    : files
-                        .map((f) => {
-                          const fState = String(f.state || 'ok').toLowerCase();
-                          const fBadge =
-                            fState === 'in_parity' || fState === 'synced' || fState === 'ok'
-                              ? '<span class="badge badge-pass">synced</span>'
-                              : fState === 'missing'
-                              ? '<span class="badge badge-neutral">missing</span>'
-                              : `<span class="badge badge-warn">${f.manuallyEdited ? 'editado manualmente' : 'drifted'}</span>`;
-                          const hashPreview = f.actualSha256 || f.canonicalSha256 || '';
-                          return `
-                          <div class="adapter-file-row">
-                            <div style="min-width:0;">
-                              <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(f.path)}</div>
-                              ${hashPreview ? `<div class="adapter-hash mono">sha256: ${escapeHtml(String(hashPreview).slice(0, 14))}…</div>` : ''}
-                            </div>
-                            ${fBadge}
-                          </div>`;
-                        })
-                        .join('')
-                }
+                ${targetPaths
+                  .map(
+                    (row) => `
+                  <div class="adapter-file-row">
+                    <span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(row.path)}</span>
+                    ${row.badge}
+                  </div>`
+                  )
+                  .join('')}
               </div>
 
               <div class="adapter-actions">
@@ -1781,49 +2041,16 @@ export function renderAdaptersView(state, ui) {
           .join('')}
       </div>
 
-      <!-- Prompt Amplifier Canonical Preview Panel -->
-      <section class="amplifier-panel" aria-label="Regra Canônica Prompt Amplifier">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-          <div>
-            <h3 class="panel-title">${icon('sliders', 16)} Regra Canônica: Prompt Amplifier (4 Partes)</h3>
-            <p class="panel-subtitle">Projetada identicamente para Antigravity, Claude Code, Codex e Cursor</p>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <span class="badge badge-neutral mono">.claude/rules/80-prompt-amplifier.md</span>
-            <span class="badge ${adapters.inParityCount === adapters.total ? 'badge-pass' : 'badge-warn'}">
-              Sincronizado em ${adapters.inParityCount}/${adapters.total} IAs
-            </span>
-          </div>
-        </div>
-
-        <div class="amplifier-grid">
-          <div class="amplifier-step">
-            <span class="amplifier-num">01 · UNASKED EXPERTISE</span>
-            <div class="amplifier-step-title">Especialista de topo</div>
-            <div class="amplifier-step-desc">O que um especialista sênior faria aqui que não foi pedido explicitamente?</div>
-          </div>
-          <div class="amplifier-step">
-            <span class="amplifier-num">02 · RAWEST MATERIAL</span>
-            <div class="amplifier-step-title">Fonte mais crua primeiro</div>
-            <div class="amplifier-step-desc">Qual fonte primária ler antes de propor? Código rodando, logs reais, erro real, schema.</div>
-          </div>
-          <div class="amplifier-step">
-            <span class="amplifier-num">03 · METHODS AND TOOLS</span>
-            <div class="amplifier-step-title">Métodos e ferramentas</div>
-            <div class="amplifier-step-desc">Quais técnicas e validadores nomeados aplicar (ex.: validate-task, gate.mjs, node --test)?</div>
-          </div>
-          <div class="amplifier-step">
-            <span class="amplifier-num">04 · EXTERNAL PROOF</span>
-            <div class="amplifier-step-title">Oráculo externo</div>
-            <div class="amplifier-step-desc">O que, além do agente ou do usuário, prova objetivamente que o resultado funciona?</div>
-          </div>
-        </div>
-
-        <div class="amplifier-footer">
-          <code class="mono">Amplified: &lt;tarefa reescrita&gt; · proof: &lt;oráculo&gt;</code>
-          <span style="color:#94A3B8;">Deeper, not bigger — aguça método, fontes e prova sem inflar escopo.</span>
-        </div>
-      </section>
+      <!-- Gaveta: Regra Canônica (Prompt Amplifier 4 passos) & Hashes SHA-256 -->
+      ${renderAccordion({
+        id: 'adapters-canonical',
+        title: 'Prévia da Regra Canônica & Hashes SHA-256',
+        subtitle: 'Prompt Amplifier (4 passos) + assinatura criptográfica de paridade',
+        iconName: 'sliders',
+        badgesHtml: `<span class="badge badge-neutral mono">.claude/rules/80-prompt-amplifier.md</span><span class="badge ${adapters.inParityCount === adapters.total ? 'badge-pass' : 'badge-warn'} mono">${adapters.inParityCount}/${adapters.total}</span>`,
+        open: canonicalOpen,
+        bodyHtml: canonicalDrawerBody,
+      })}
     </div>
   `;
 }
