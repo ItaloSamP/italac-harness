@@ -22,6 +22,8 @@ import {
   renderAdaptersView,
   renderCalendarView,
   renderCalendarEventModal,
+  renderWorkspaceDropdownList,
+  renderWorkspacesView,
   renderExecConsole,
   renderTaskDrawer,
   renderNewTaskModal,
@@ -44,6 +46,7 @@ const VIEW_TITLES = {
   schedule: 'Agenda Semanal',
   agents: 'Agentes & Incidentes',
   adapters: 'Hub Multi-AI',
+  workspaces: 'Projetos',
   calendar: 'Calendário & Rotina',
 };
 
@@ -51,6 +54,9 @@ const state = {
   ok: true,
   watching: true,
   repoRoot: 'workflow',
+  workspace: null,
+  workspaces: [],
+  workspacesDir: '',
   config: { autoRunOnInProgress: true, maxConcurrentRuns: 2, defaultEngine: 'mock' },
   tasks: [],
   queue: { eligible: [], ineligible: [] },
@@ -102,6 +108,13 @@ const ui = {
   disconnected: false,
   runningGate: false,
   syncingAdapters: false,
+  workspacesFilter: 'all',
+  workspacesSearch: '',
+  workspacesLoading: false,
+  workspacesError: null,
+  switchingWorkspaceId: null,
+  wsDropdownOpen: false,
+  wsDropdownQuery: '',
   paletteOpen: false,
   paletteQuery: '',
   paletteIndex: 0,
@@ -167,7 +180,15 @@ const el = {
   navBadgeSchedule: document.getElementById('nav-badge-schedule'),
   navBadgeAgents: document.getElementById('nav-badge-agents'),
   navBadgeAdapters: document.getElementById('nav-badge-adapters'),
+  navBadgeWorkspaces: document.getElementById('nav-badge-workspaces'),
   navBadgeCalendar: document.getElementById('nav-badge-calendar'),
+  wsSwitcher: document.getElementById('ws-switcher'),
+  wsSwitcherBtn: document.getElementById('ws-switcher-btn'),
+  wsSwitcherName: document.getElementById('ws-switcher-name'),
+  wsSwitcherBranch: document.getElementById('ws-switcher-branch'),
+  wsSwitcherDropdown: document.getElementById('ws-switcher-dropdown'),
+  wsSwitcherSearch: document.getElementById('ws-switcher-search'),
+  wsSwitcherList: document.getElementById('ws-switcher-list'),
 };
 
 /* ==========================================================================
@@ -233,8 +254,28 @@ function updateChrome() {
   });
 
   el.topbarTitle.textContent = VIEW_TITLES[ui.view] || 'Harness Hub';
-  const repoName = String(state.repoRoot || 'workflow').split(/[\\/]/).filter(Boolean).pop() || 'workflow';
-  el.topbarRepo.textContent = repoName;
+  const activeWs = state.workspace || null;
+  const repoName =
+    activeWs?.name ||
+    String(state.repoRoot || 'workflow').split(/[\\/]/).filter(Boolean).pop() ||
+    'workflow';
+  const branchName = activeWs?.isGit ? activeWs.gitBranch || 'HEAD' : '';
+  el.topbarRepo.textContent = branchName ? `${repoName} · ${branchName}` : repoName;
+  el.topbarRepo.title = activeWs?.path
+    ? `${activeWs.path}${branchName ? ` (${branchName})` : ''} — Clique para gerenciar projetos`
+    : 'Ver e trocar projeto ativo';
+
+  // Sidebar Workspace Switcher
+  if (el.wsSwitcherName) el.wsSwitcherName.textContent = repoName;
+  if (el.wsSwitcherBranch) {
+    el.wsSwitcherBranch.textContent = branchName || (activeWs ? 'local' : 'main');
+  }
+  if (el.navBadgeWorkspaces) {
+    el.navBadgeWorkspaces.textContent = String((state.workspaces || []).length);
+  }
+  if (ui.wsDropdownOpen && el.wsSwitcherList) {
+    el.wsSwitcherList.innerHTML = renderWorkspaceDropdownList(state, ui);
+  }
 
   // Sidebar badges
   const nonTerminal = (state.tasks || []).filter((t) => !isTerminalStatus(t.status)).length;
@@ -330,6 +371,9 @@ function renderView() {
       break;
     case 'adapters':
       el.main.innerHTML = renderAdaptersView(state, ui);
+      break;
+    case 'workspaces':
+      el.main.innerHTML = renderWorkspacesView(state, ui);
       break;
     case 'calendar':
       el.main.innerHTML = renderCalendarView(state, ui);
@@ -478,6 +522,100 @@ function closeContextMenu() {
   el.contextMenu.innerHTML = '';
 }
 
+function openWsDropdown() {
+  if (ui.sidebarCollapsed) {
+    navigate('workspaces');
+    return;
+  }
+  ui.wsDropdownOpen = true;
+  ui.wsDropdownQuery = '';
+  if (el.wsSwitcherBtn) el.wsSwitcherBtn.setAttribute('aria-expanded', 'true');
+  if (el.wsSwitcherDropdown) el.wsSwitcherDropdown.hidden = false;
+  if (el.wsSwitcherSearch) el.wsSwitcherSearch.value = '';
+  if (el.wsSwitcherList) {
+    el.wsSwitcherList.innerHTML = renderWorkspaceDropdownList(state, ui);
+  }
+  if ((state.workspaces || []).length === 0) {
+    loadWorkspaces({ silent: true });
+  }
+  if (el.wsSwitcherSearch) el.wsSwitcherSearch.focus();
+}
+
+function closeWsDropdown() {
+  if (!ui.wsDropdownOpen) return;
+  ui.wsDropdownOpen = false;
+  if (el.wsSwitcherBtn) el.wsSwitcherBtn.setAttribute('aria-expanded', 'false');
+  if (el.wsSwitcherDropdown) el.wsSwitcherDropdown.hidden = true;
+}
+
+async function loadWorkspaces({ silent = false } = {}) {
+  if (!silent) {
+    ui.workspacesLoading = true;
+    ui.workspacesError = null;
+    if (ui.view === 'workspaces') renderView();
+  }
+  try {
+    const res = await api.getWorkspaces();
+    ui.workspacesLoading = false;
+    ui.workspacesError = null;
+    if (res?.workspacesDir) state.workspacesDir = res.workspacesDir;
+    if (Array.isArray(res?.workspaces)) state.workspaces = res.workspaces;
+    if (res?.activeId && Array.isArray(state.workspaces)) {
+      const found = state.workspaces.find((w) => w.id === res.activeId);
+      if (found) state.workspace = found;
+    }
+  } catch (err) {
+    ui.workspacesLoading = false;
+    ui.workspacesError = err.message;
+    if (!silent) {
+      showToast('Erro ao listar projetos', err.message, { type: 'error' });
+    }
+  }
+  updateChrome();
+  if (ui.view === 'workspaces') renderView();
+}
+
+async function handleSelectWorkspace(id) {
+  if (!id || ui.switchingWorkspaceId) return;
+  if (state.workspace?.id === id) {
+    closeWsDropdown();
+    return;
+  }
+  ui.switchingWorkspaceId = id;
+  if (ui.wsDropdownOpen && el.wsSwitcherList) {
+    el.wsSwitcherList.innerHTML = renderWorkspaceDropdownList(state, ui);
+  }
+  if (ui.view === 'workspaces') renderView();
+  try {
+    const res = await api.selectWorkspace(id);
+    closeWsDropdown();
+    closeDrawers();
+    if (res?.state && typeof res.state === 'object') {
+      Object.assign(state, res.state);
+    }
+    if (res?.activeWorkspace) {
+      state.workspace = res.activeWorkspace;
+    }
+    ui.github.loaded = false;
+    ui.calendar.loaded = false;
+    const wsName = state.workspace?.name || id;
+    const wsBranch = state.workspace?.isGit ? ` (${state.workspace.gitBranch || 'HEAD'})` : '';
+    showToast('Ambiente alterado', `${wsName}${wsBranch}`, { type: 'success' });
+    renderView();
+    renderConsole();
+    // Refresh full state + background feeds for new workspace
+    await fetchState({ silent: true });
+    loadGithubIssues();
+    loadCalendar({ silent: true });
+  } catch (err) {
+    showToast('Não foi possível abrir ambiente', err.message, { type: 'error', persistent: true });
+  } finally {
+    ui.switchingWorkspaceId = null;
+    updateChrome();
+    if (ui.view === 'workspaces') renderView();
+  }
+}
+
 function openCardContextMenu(taskId, anchorEl) {
   const task = (state.tasks || []).find((t) => t.id === taskId);
   if (!task) return;
@@ -618,11 +756,15 @@ function navigate(view) {
   if (!VIEW_TITLES[view]) return;
   ui.view = view;
   setMobileSidebar(false);
+  closeWsDropdown();
   if (view === 'github' && !ui.github.loaded) {
     loadGithubIssues();
   }
   if (view === 'calendar' && !ui.calendar.loaded) {
     loadCalendar();
+  }
+  if (view === 'workspaces' && ((state.workspaces || []).length === 0 || !state.workspacesDir)) {
+    loadWorkspaces();
   }
   renderView();
 }
@@ -847,6 +989,16 @@ sse.on('calendar:updated', () => {
   loadCalendar({ silent: true });
 });
 
+sse.on('workspace:changed', () => {
+  closeDrawers();
+  ui.github.loaded = false;
+  ui.calendar.loaded = false;
+  scheduleRefresh();
+  loadWorkspaces({ silent: true });
+  loadGithubIssues();
+  loadCalendar({ silent: true });
+});
+
 sse.on('watcher:error', (payload) => {
   updateSseStatus('disconnected', payload?.message || 'Erro no watcher de arquivos.');
 });
@@ -1051,6 +1203,11 @@ document.addEventListener('click', async (e) => {
   // Close context menu if clicking outside it
   if (!el.contextMenu.hidden && !e.target.closest('#context-menu') && !e.target.closest('[data-action="open-card-menu"]')) {
     closeContextMenu();
+  }
+
+  // Close workspace dropdown if clicking outside switcher
+  if (ui.wsDropdownOpen && !e.target.closest('#ws-switcher')) {
+    closeWsDropdown();
   }
 
   // Sidebar navigation
@@ -1380,6 +1537,29 @@ document.addEventListener('click', async (e) => {
         }
         break;
       }
+      case 'toggle-ws-dropdown':
+        if (ui.wsDropdownOpen) closeWsDropdown();
+        else openWsDropdown();
+        break;
+      case 'goto-workspaces-view':
+        closeWsDropdown();
+        navigate('workspaces');
+        break;
+      case 'select-workspace':
+        await handleSelectWorkspace(actionEl.getAttribute('data-ws-id'));
+        break;
+      case 'refresh-workspaces':
+        await loadWorkspaces();
+        break;
+      case 'set-ws-filter':
+        ui.workspacesFilter = actionEl.getAttribute('data-ws-filter') || 'all';
+        renderView();
+        break;
+      case 'clear-ws-filters':
+        ui.workspacesFilter = 'all';
+        ui.workspacesSearch = '';
+        renderView();
+        break;
     }
     return;
   }
@@ -1533,6 +1713,24 @@ document.addEventListener('input', (e) => {
   if (e.target.hasAttribute('data-schedule-search')) {
     ui.scheduleSearch = e.target.value;
     renderView();
+    return;
+  }
+  if (e.target.id === 'ws-switcher-search') {
+    ui.wsDropdownQuery = e.target.value;
+    if (el.wsSwitcherList) {
+      el.wsSwitcherList.innerHTML = renderWorkspaceDropdownList(state, ui);
+    }
+    return;
+  }
+  if (e.target.hasAttribute('data-ws-search')) {
+    ui.workspacesSearch = e.target.value;
+    const host = document.getElementById('ws-cards-host');
+    if (host) {
+      const temp = document.createElement('div');
+      temp.innerHTML = renderWorkspacesView(state, ui);
+      const nextHost = temp.querySelector('#ws-cards-host');
+      if (nextHost) host.replaceWith(nextHost);
+    }
     return;
   }
   if (e.target.hasAttribute('data-console-search')) {
@@ -1718,6 +1916,8 @@ function executePaletteCommand(cmdId) {
   if (!cmdId) return;
   if (cmdId.startsWith('nav:')) {
     navigate(cmdId.slice(4));
+  } else if (cmdId.startsWith('ws:')) {
+    handleSelectWorkspace(cmdId.slice(3));
   } else if (cmdId.startsWith('task:')) {
     openTaskDrawer(cmdId.slice(5));
   } else if (cmdId === 'act:new-task') {
@@ -1772,7 +1972,9 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (e.key === 'Escape') {
-    if (!el.contextMenu.hidden) {
+    if (ui.wsDropdownOpen) {
+      closeWsDropdown();
+    } else if (!el.contextMenu.hidden) {
       closeContextMenu();
     } else if (!el.modalBackdrop.hidden) {
       closeModal();
@@ -1853,6 +2055,7 @@ applySidebarState();
 renderConsole();
 sse.connect();
 fetchState();
-// Background preload GitHub Inbox count & Private Calendar badge
+// Background preload GitHub Inbox count, Workspaces & Private Calendar badge
+loadWorkspaces({ silent: true });
 loadGithubIssues();
 loadCalendar({ silent: true });

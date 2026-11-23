@@ -1,0 +1,416 @@
+// Multi-Workspace manager for Harness Hub.
+// Discovers direct child project folders inside `workspacesDir` (default: parent of primaryRootDir),
+// detects Git branch via fast direct `.git/HEAD` reads (zero subprocesses), enforces strict
+// containment / symlink / dot-folder security, and caches isolated per-workspace stores & runners.
+// Zero dependencies — Node.js v24 native ESM.
+
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { createRunner } from './runner.mjs';
+import { createStore, StoreError, TASK_ID_RE } from './store.mjs';
+
+const IS_WIN = process.platform === 'win32';
+const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+function normalizeForCompare(p) {
+  const resolved = resolve(p);
+  return IS_WIN ? resolved.toLowerCase() : resolved;
+}
+
+function isStrictChildPath(baseDir, candidatePath) {
+  const base = normalizeForCompare(baseDir);
+  const target = normalizeForCompare(candidatePath);
+  const baseWithSep = base.endsWith(sep) ? base : base + sep;
+  return target !== base && target.startsWith(baseWithSep);
+}
+
+/**
+ * Validates a workspace folder ID against traversal, path separators, and hidden dot-folders.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+export function validateWorkspaceId(id) {
+  if (typeof id !== 'string') {
+    throw new StoreError('INVALID_WORKSPACE_ID', 'ID de workspace inválido ou ausente.', 400);
+  }
+  const trimmed = id.trim();
+  if (
+    !trimmed ||
+    trimmed !== id ||
+    trimmed.startsWith('.') ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('\0') ||
+    trimmed.includes('..') ||
+    basename(trimmed) !== trimmed
+  ) {
+    throw new StoreError(
+      'INVALID_WORKSPACE_ID',
+      `ID de workspace inválido: "${id}". Selecione uma pasta direta válida.`,
+      400,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Fast Git branch detection by reading `<dir>/.git/HEAD` directly (no subprocess spawning).
+ * Supports standard `.git/HEAD` directories as well as `.git` gitdir pointer files (worktrees/submodules).
+ *
+ * @param {string} dirPath
+ * @returns {{ isGit: boolean, gitBranch: string | null }}
+ */
+export function readGitBranch(dirPath) {
+  const dotGitPath = join(dirPath, '.git');
+  if (!existsSync(dotGitPath)) {
+    return { isGit: false, gitBranch: null };
+  }
+
+  let headPath = null;
+  try {
+    const stat = lstatSync(dotGitPath);
+    if (stat.isDirectory()) {
+      headPath = join(dotGitPath, 'HEAD');
+    } else if (stat.isFile()) {
+      // Git worktree or submodule pointer: `gitdir: <relative-or-abs-path>`
+      const pointer = readFileSync(dotGitPath, 'utf8').trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(pointer);
+      if (match && match[1]) {
+        const gitDir = resolve(dirPath, match[1].trim());
+        headPath = join(gitDir, 'HEAD');
+      }
+    } else {
+      return { isGit: false, gitBranch: null };
+    }
+  } catch {
+    return { isGit: false, gitBranch: null };
+  }
+
+  if (!headPath || !existsSync(headPath)) {
+    return { isGit: true, gitBranch: null };
+  }
+
+  try {
+    const headContent = readFileSync(headPath, 'utf8').trim();
+    if (!headContent) return { isGit: true, gitBranch: null };
+    if (headContent.startsWith('ref: refs/heads/')) {
+      return {
+        isGit: true,
+        gitBranch: headContent.slice('ref: refs/heads/'.length).trim() || null,
+      };
+    }
+    if (headContent.startsWith('ref: ')) {
+      return {
+        isGit: true,
+        gitBranch: headContent.slice('ref: '.length).trim() || null,
+      };
+    }
+    if (SHORT_SHA_RE.test(headContent)) {
+      return {
+        isGit: true,
+        gitBranch: headContent.slice(0, 7),
+      };
+    }
+    return { isGit: true, gitBranch: null };
+  } catch {
+    return { isGit: true, gitBranch: null };
+  }
+}
+
+function countTasksFast(dirPath) {
+  const tasksDir = join(dirPath, '.specs', 'tasks');
+  if (!existsSync(tasksDir)) return 0;
+  try {
+    const entries = readdirSync(tasksDir);
+    let count = 0;
+    for (const file of entries) {
+      if (!file.endsWith('.md')) continue;
+      const id = file.slice(0, -3);
+      if (TASK_ID_RE.test(id)) count += 1;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+function detectHasHarness(dirPath) {
+  try {
+    return (
+      existsSync(join(dirPath, '.specs')) ||
+      existsSync(join(dirPath, 'AGENTS.md')) ||
+      existsSync(join(dirPath, 'CLAUDE.md')) ||
+      existsSync(join(dirPath, '.claude'))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Creates a multi-workspace manager with lazy cached stores and runners per workspace.
+ *
+ * @param {{
+ *   primaryRootDir: string,
+ *   workspacesDir?: string,
+ *   sse?: { broadcast: (event: string, data: unknown) => void } | null,
+ *   onRunUpdate?: (run: object, ctx: object) => void,
+ *   mockStepDelayMs?: number,
+ * }} options
+ */
+export function createWorkspaceManager(options = {}) {
+  if (!options || !options.primaryRootDir) {
+    throw new Error('createWorkspaceManager requires primaryRootDir');
+  }
+
+  const resolvedPrimary = resolve(options.primaryRootDir);
+  const resolvedWorkspacesDir = options.workspacesDir
+    ? resolve(options.workspacesDir)
+    : dirname(resolvedPrimary);
+  const primaryId = basename(resolvedPrimary);
+  const primaryNorm = normalizeForCompare(resolvedPrimary);
+
+  const sse = options.sse || null;
+  const onRunUpdate = typeof options.onRunUpdate === 'function' ? options.onRunUpdate : null;
+  const mockStepDelayMs = options.mockStepDelayMs ?? 200;
+
+  let activeId = primaryId;
+
+  /** @type {Map<string, { id: string, name: string, path: string, store: any, runner: any }>} */
+  const contexts = new Map();
+
+  function getSafeRealBase() {
+    try {
+      return realpathSync(resolvedWorkspacesDir);
+    } catch {
+      return resolvedWorkspacesDir;
+    }
+  }
+
+  function getActiveRunCount(id) {
+    const ctx = contexts.get(id);
+    if (!ctx) return 0;
+    let count = 0;
+    for (const run of ctx.runner.listRuns()) {
+      if (run.status === 'running') count += 1;
+    }
+    return count;
+  }
+
+  function inspectWorkspace(id, dirPath) {
+    const { isGit, gitBranch } = readGitBranch(dirPath);
+    const hasHarness = detectHasHarness(dirPath);
+    const taskCount = countTasksFast(dirPath);
+    const activeRunCount = getActiveRunCount(id);
+    const isPrimary = normalizeForCompare(dirPath) === primaryNorm;
+
+    return {
+      id,
+      name: id,
+      path: dirPath,
+      isGit,
+      gitBranch,
+      hasHarness,
+      taskCount,
+      activeRunCount,
+      isPrimary,
+    };
+  }
+
+  function discoverWorkspaces() {
+    const discovered = new Map();
+    const realBase = getSafeRealBase();
+
+    if (existsSync(resolvedWorkspacesDir)) {
+      let entries = [];
+      try {
+        entries = readdirSync(resolvedWorkspacesDir, { withFileTypes: true });
+      } catch {
+        entries = [];
+      }
+
+      for (const entry of entries) {
+        const name = entry.name;
+        if (!name || name.startsWith('.')) continue;
+
+        const candidatePath = resolve(resolvedWorkspacesDir, name);
+        if (!isStrictChildPath(resolvedWorkspacesDir, candidatePath)) continue;
+
+        try {
+          const lstat = lstatSync(candidatePath);
+          if (!lstat.isDirectory() && !lstat.isSymbolicLink()) continue;
+
+          // Resolve symlinks / Windows junctions and enforce strict containment inside workspacesDir
+          const realTarget = realpathSync(candidatePath);
+          if (!isStrictChildPath(realBase, realTarget)) continue;
+
+          const targetStat = statSync(realTarget);
+          if (!targetStat.isDirectory()) continue;
+
+          discovered.set(name, inspectWorkspace(name, candidatePath));
+        } catch {
+          // Skip unreadable or broken entries gracefully
+        }
+      }
+    }
+
+    // Ensure primaryRootDir is always available even if workspacesDir was overridden to a separate directory
+    if (!discovered.has(primaryId) && existsSync(resolvedPrimary)) {
+      discovered.set(primaryId, inspectWorkspace(primaryId, resolvedPrimary));
+    }
+
+    const workspaces = Array.from(discovered.values()).sort((a, b) => {
+      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    return { discovered, workspaces };
+  }
+
+  function getOrCreateContext(wsMeta) {
+    const existing = contexts.get(wsMeta.id);
+    if (existing) return existing;
+
+    const store = createStore(wsMeta.path);
+    const ctx = {
+      id: wsMeta.id,
+      name: wsMeta.name,
+      path: wsMeta.path,
+      store,
+      runner: null,
+    };
+
+    ctx.runner = createRunner({
+      rootDir: wsMeta.path,
+      sse,
+      maxConcurrentRuns: store.readBoard().config.maxConcurrentRuns || 2,
+      lockManager: {
+        acquireLock: store.acquireLock,
+        releaseLock: store.releaseLock,
+      },
+      mockStepDelayMs,
+      onRunUpdate(run) {
+        if (onRunUpdate) {
+          onRunUpdate(run, ctx);
+        }
+      },
+    });
+
+    contexts.set(wsMeta.id, ctx);
+    return ctx;
+  }
+
+  function listWorkspaces() {
+    const { workspaces } = discoverWorkspaces();
+    return {
+      workspacesDir: resolvedWorkspacesDir,
+      activeId,
+      workspaces,
+    };
+  }
+
+  function getActiveWorkspace() {
+    const { discovered } = discoverWorkspaces();
+    const found = discovered.get(activeId);
+    if (found) return found;
+    return inspectWorkspace(primaryId, resolvedPrimary);
+  }
+
+  function getActiveContext() {
+    const existing = contexts.get(activeId);
+    if (existing) return existing;
+
+    const ws = getActiveWorkspace();
+    return getOrCreateContext(ws);
+  }
+
+  function selectWorkspace(id) {
+    const safeId = validateWorkspaceId(id);
+
+    // Explicit symlink escape check on direct candidate before falling back to 404
+    const candidatePath = resolve(resolvedWorkspacesDir, safeId);
+    if (!isStrictChildPath(resolvedWorkspacesDir, candidatePath)) {
+      throw new StoreError(
+        'PATH_TRAVERSAL',
+        'Acesso fora do diretório de workspaces bloqueado.',
+        403,
+      );
+    }
+
+    if (existsSync(candidatePath) || (() => {
+      try {
+        lstatSync(candidatePath);
+        return true;
+      } catch {
+        return false;
+      }
+    })()) {
+      try {
+        const lstat = lstatSync(candidatePath);
+        if (lstat.isSymbolicLink() || lstat.isDirectory()) {
+          const realBase = getSafeRealBase();
+          const realTarget = realpathSync(candidatePath);
+          if (!isStrictChildPath(realBase, realTarget)) {
+            throw new StoreError(
+              'PATH_TRAVERSAL',
+              'Symlink apontando para fora do diretório de workspaces bloqueado.',
+              403,
+            );
+          }
+        }
+      } catch (err) {
+        if (err instanceof StoreError) throw err;
+      }
+    }
+
+    const { discovered } = discoverWorkspaces();
+    const target = discovered.get(safeId);
+    if (!target) {
+      throw new StoreError(
+        'WORKSPACE_NOT_FOUND',
+        `Workspace não encontrado em ${resolvedWorkspacesDir}: "${safeId}"`,
+        404,
+      );
+    }
+
+    activeId = target.id;
+    const context = getOrCreateContext(target);
+    const workspace = {
+      ...target,
+      activeRunCount: getActiveRunCount(target.id),
+    };
+
+    return { workspace, context };
+  }
+
+  function stopAll(reason = 'Servidor encerrado') {
+    for (const ctx of contexts.values()) {
+      try {
+        ctx.runner.stopAll(reason);
+      } catch {
+        // ignore teardown errors
+      }
+    }
+  }
+
+  return {
+    get activeId() {
+      return activeId;
+    },
+    primaryRootDir: resolvedPrimary,
+    workspacesDir: resolvedWorkspacesDir,
+    listWorkspaces,
+    getActiveWorkspace,
+    getActiveContext,
+    selectWorkspace,
+    stopAll,
+  };
+}

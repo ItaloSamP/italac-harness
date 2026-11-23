@@ -74,6 +74,10 @@ const ICONS = {
   flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  'folder-open': '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M2 10h20"/>',
+  'git-branch': '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
 };
 
 export function icon(name, size = 16, extraClass = '') {
@@ -2589,6 +2593,7 @@ export function renderCommandPalette(state, ui) {
     { id: 'nav:schedule', group: 'Navegar', label: 'Agenda Semanal', hint: 'Seg–Dom' },
     { id: 'nav:agents', group: 'Navegar', label: 'Agentes & Incidentes', hint: '14 agentes' },
     { id: 'nav:adapters', group: 'Navegar', label: 'Hub Multi-AI', hint: 'Paridade & Prompt Amplifier' },
+    { id: 'nav:workspaces', group: 'Navegar', label: 'Projetos / Workspaces', hint: state.workspacesDir || 'C:\\Estudos', searchText: 'projetos workspaces ambientes pastas trocar projeto' },
     { id: 'nav:calendar', group: 'Privado', label: 'Calendário & Rotina', hint: 'Local · fora do Git', searchText: 'privado calendario rotina faculdade pessoal prazos estudo' },
   ];
 
@@ -2602,6 +2607,15 @@ export function renderCommandPalette(state, ui) {
     { id: 'act:toggle-console', group: 'Ações rápidas', label: 'Abrir / Fechar Console ao Vivo', hint: 'Logs' },
   ];
 
+  const activeWsId = state.workspace?.id || '';
+  const wsItems = (state.workspaces || []).slice(0, 20).map((ws) => ({
+    id: `ws:${ws.id}`,
+    group: 'Trocar Projeto',
+    label: ws.name || ws.id,
+    hint: `${ws.id === activeWsId ? 'Ativo · ' : ''}${ws.gitBranch || (ws.isGit ? 'git' : 'local')}`,
+    searchText: `projeto workspace abrir ambiente ${ws.name || ''} ${ws.id || ''} ${ws.gitBranch || ''} ${ws.path || ''}`.toLowerCase(),
+  }));
+
   const taskItems = (state.tasks || []).slice(0, 30).map((t) => ({
     id: `task:${t.id}`,
     group: 'Tarefas',
@@ -2610,7 +2624,7 @@ export function renderCommandPalette(state, ui) {
     searchText: `${t.title} ${t.id} ${t.meta?.assignee || ''} ${t.meta?.priority || ''}`.toLowerCase(),
   }));
 
-  const all = [...navItems, ...actions, ...taskItems].filter((item) => {
+  const all = [...navItems, ...actions, ...wsItems, ...taskItems].filter((item) => {
     if (!q) return true;
     return `${item.label} ${item.hint} ${item.searchText || ''}`.toLowerCase().includes(q);
   });
@@ -3238,5 +3252,297 @@ export function renderCalendarEventModal(ui) {
         </div>
       </div>
     </form>
+  `;
+}
+
+/* ==========================================================================
+   View 9: Projetos / Workspaces (Multi-Workspace Switcher & Directory)
+   ========================================================================== */
+
+export const WORKSPACE_FILTERS = [
+  { id: 'all', label: 'Todos' },
+  { id: 'git', label: 'Com Git' },
+  { id: 'harness', label: 'Com Harness' },
+  { id: 'tasks', label: 'Com Tarefas' },
+  { id: 'running', label: 'Em Execução' },
+];
+
+export function renderWorkspaceDropdownList(state, ui) {
+  const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+  const activeId = state.workspace?.id || '';
+  const query = (ui.wsDropdownQuery || '').trim().toLowerCase();
+  const switchingId = ui.switchingWorkspaceId || null;
+
+  const filtered = workspaces.filter((ws) => {
+    if (!query) return true;
+    return `${ws.name || ''} ${ws.id || ''} ${ws.gitBranch || ''} ${ws.path || ''}`.toLowerCase().includes(query);
+  });
+
+  if (workspaces.length === 0) {
+    return `<div class="ws-dropdown-empty">Nenhum projeto detectado</div>`;
+  }
+
+  if (filtered.length === 0) {
+    return `<div class="ws-dropdown-empty">Nenhum projeto encontrado para "${escapeHtml(ui.wsDropdownQuery)}"</div>`;
+  }
+
+  return filtered
+    .map((ws) => {
+      const isActive = ws.id === activeId;
+      const isSwitching = switchingId === ws.id;
+      const hasRuns = (ws.activeRunCount || 0) > 0;
+      const taskCount = ws.taskCount ?? 0;
+      return `
+        <button
+          type="button"
+          role="option"
+          aria-selected="${isActive ? 'true' : 'false'}"
+          class="ws-dropdown-item ${isActive ? 'is-active' : ''}"
+          data-action="select-workspace"
+          data-ws-id="${escapeHtml(ws.id)}"
+          ${switchingId ? 'disabled' : ''}
+        >
+          <span class="ws-dropdown-item-main">
+            <span class="ws-dropdown-item-top">
+              <span class="ws-dropdown-item-name">${escapeHtml(ws.name || ws.id)}</span>
+              ${hasRuns ? `<span class="ws-run-dot" title="${ws.activeRunCount} em execução"></span>` : ''}
+            </span>
+            <span class="ws-dropdown-item-meta mono">
+              ${ws.isGit ? `${icon('git-branch', 11)} ${escapeHtml(ws.gitBranch || 'HEAD')}` : 'local'}
+              ${taskCount > 0 ? ` · ${taskCount} ${taskCount === 1 ? 'tarefa' : 'tarefas'}` : ''}
+            </span>
+          </span>
+          <span class="ws-dropdown-item-right">
+            ${
+              isSwitching
+                ? icon('spinner', 13, 'spin')
+                : isActive
+                ? `<span class="ws-active-check" aria-label="Ativo">${icon('check', 13)}</span>`
+                : ''
+            }
+          </span>
+        </button>
+      `;
+    })
+    .join('');
+}
+
+export function renderWorkspacesView(state, ui) {
+  const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+  const activeWs = state.workspace || null;
+  const activeId = activeWs?.id || '';
+  const workspacesDir = state.workspacesDir || 'C:\\Estudos';
+  const filter = ui.workspacesFilter || 'all';
+  const search = (ui.workspacesSearch || '').trim().toLowerCase();
+  const switchingId = ui.switchingWorkspaceId || null;
+
+  const totalCount = workspaces.length;
+  const gitCount = workspaces.filter((w) => w.isGit).length;
+  const harnessCount = workspaces.filter((w) => w.hasHarness).length;
+  const runningCount = workspaces.filter((w) => (w.activeRunCount || 0) > 0).length;
+
+  const filtered = workspaces.filter((w) => {
+    if (filter === 'git' && !w.isGit) return false;
+    if (filter === 'harness' && !w.hasHarness) return false;
+    if (filter === 'tasks' && !(w.taskCount > 0)) return false;
+    if (filter === 'running' && !(w.activeRunCount > 0)) return false;
+    if (search) {
+      const hay = `${w.name || ''} ${w.id || ''} ${w.gitBranch || ''} ${w.path || ''}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  // Sort: active first, then running, then with tasks, then with harness, then alphabetical
+  const sorted = [...filtered].sort((a, b) => {
+    if (a.id === activeId) return -1;
+    if (b.id === activeId) return 1;
+    if ((b.activeRunCount || 0) !== (a.activeRunCount || 0)) return (b.activeRunCount || 0) - (a.activeRunCount || 0);
+    if ((b.taskCount || 0) !== (a.taskCount || 0)) return (b.taskCount || 0) - (a.taskCount || 0);
+    if (Boolean(b.hasHarness) !== Boolean(a.hasHarness)) return Number(Boolean(b.hasHarness)) - Number(Boolean(a.hasHarness));
+    return String(a.name || a.id).localeCompare(String(b.name || b.id));
+  });
+
+  return `
+    <div class="ws-view">
+      <!-- Header -->
+      <div class="ws-header">
+        <div class="ws-header-left">
+          <h2 class="ws-title">Projetos</h2>
+          <span class="ws-dir-pill mono" title="Diretório base de workspaces">${icon('folder', 12)} ${escapeHtml(workspacesDir)}</span>
+        </div>
+        <div class="ws-header-right">
+          <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces" ${ui.workspacesLoading ? 'disabled' : ''}>
+            ${icon(ui.workspacesLoading ? 'spinner' : 'refresh', 13, ui.workspacesLoading ? 'spin' : '')}
+            <span>Atualizar lista</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Sober KPI Strip -->
+      <div class="ws-summary-strip">
+        <div class="ws-stat-chip">
+          <span class="ws-stat-label">Total de projetos</span>
+          <strong class="ws-stat-val mono tabular">${totalCount}</strong>
+        </div>
+        <div class="ws-stat-chip">
+          <span class="ws-stat-label">Com Git</span>
+          <strong class="ws-stat-val mono tabular">${gitCount}</strong>
+        </div>
+        <div class="ws-stat-chip">
+          <span class="ws-stat-label">Com Harness</span>
+          <strong class="ws-stat-val mono tabular">${harnessCount}</strong>
+        </div>
+        <div class="ws-stat-chip">
+          <span class="ws-stat-label">Em Execução</span>
+          <strong class="ws-stat-val mono tabular">${runningCount}</strong>
+        </div>
+      </div>
+
+      <!-- Search + Filter Bar -->
+      <div class="ws-toolbar">
+        <div class="ws-search-wrap">
+          ${icon('search', 14)}
+          <input
+            type="search"
+            class="input ws-search-input"
+            id="ws-view-search"
+            placeholder="Buscar projeto por nome, branch ou caminho…"
+            value="${escapeHtml(ui.workspacesSearch || '')}"
+            data-ws-search="true"
+            autocomplete="off"
+          />
+        </div>
+        <div class="ws-filter-pills" role="group" aria-label="Filtrar projetos">
+          ${WORKSPACE_FILTERS.map((f) => `
+            <button
+              type="button"
+              class="ws-filter-pill ${filter === f.id ? 'is-active' : ''}"
+              data-action="set-ws-filter"
+              data-ws-filter="${f.id}"
+              aria-pressed="${filter === f.id ? 'true' : 'false'}"
+            >
+              ${escapeHtml(f.label)}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      ${
+        ui.workspacesError
+          ? `<div class="cal-error-banner" role="alert">
+              <div class="cal-error-main">
+                ${icon('alert-triangle', 16)}
+                <span>Não foi possível listar projetos: <span class="mono">${escapeHtml(ui.workspacesError)}</span></span>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces">Tentar novamente</button>
+            </div>`
+          : ''
+      }
+
+      <!-- Content Area -->
+      <div id="ws-cards-host">
+        ${renderWorkspacesGridContent(sorted, { activeId, switchingId, loading: ui.workspacesLoading && totalCount === 0, totalCount, hasFilter: filter !== 'all' || Boolean(search) })}
+      </div>
+    </div>
+  `;
+}
+
+export function renderWorkspacesGridContent(sorted, { activeId, switchingId, loading, totalCount, hasFilter }) {
+  if (loading) {
+    return `
+      <div class="ws-grid" aria-busy="true" aria-label="Carregando projetos">
+        <div class="skeleton-box" style="height: 156px;"></div>
+        <div class="skeleton-box" style="height: 156px;"></div>
+        <div class="skeleton-box" style="height: 156px;"></div>
+      </div>
+    `;
+  }
+
+  if (sorted.length === 0) {
+    return `
+      <div class="ws-empty-state">
+        ${icon('folder', 28)}
+        <h3>${totalCount === 0 ? 'Nenhum projeto encontrado' : 'Nenhum projeto corresponde ao filtro'}</h3>
+        <p>${
+          totalCount === 0
+            ? 'Nenhuma pasta de projeto foi detectada no diretório de workspaces configurado.'
+            : 'Tente ajustar a busca ou limpar os filtros ativos para visualizar todos os ambientes.'
+        }</p>
+        ${
+          hasFilter
+            ? `<button type="button" class="btn btn-secondary btn-sm" data-action="clear-ws-filters">Limpar filtros</button>`
+            : `<button type="button" class="btn btn-secondary btn-sm" data-action="refresh-workspaces">${icon('refresh', 13)} Atualizar</button>`
+        }
+      </div>
+    `;
+  }
+
+  return `
+    <div class="ws-grid">
+      ${sorted
+        .map((ws) => {
+          const isActive = ws.id === activeId;
+          const isSwitching = switchingId === ws.id;
+          const hasRuns = (ws.activeRunCount || 0) > 0;
+          const taskCount = ws.taskCount ?? 0;
+
+          return `
+            <article class="ws-card ${isActive ? 'is-active' : ''}" data-ws-card="${escapeHtml(ws.id)}">
+              <div class="ws-card-head">
+                <div class="ws-card-title-row">
+                  <span class="ws-card-icon ${isActive ? 'is-active' : ''}" aria-hidden="true">
+                    ${icon(isActive ? 'folder-open' : 'folder', 16)}
+                  </span>
+                  <h3 class="ws-card-name" title="${escapeHtml(ws.name || ws.id)}">${escapeHtml(ws.name || ws.id)}</h3>
+                </div>
+                <div class="ws-card-badges">
+                  ${isActive ? `<span class="badge badge-accent">Ativo</span>` : ''}
+                  ${
+                    hasRuns
+                      ? `<span class="badge badge-running"><span class="pulse-dot"></span> ${ws.activeRunCount} em execução</span>`
+                      : ''
+                  }
+                </div>
+              </div>
+
+              <div class="ws-card-path mono" title="${escapeHtml(ws.path || '')}">${escapeHtml(ws.path || ws.id)}</div>
+
+              <div class="ws-card-meta">
+                <span class="ws-meta-pill mono ${ws.isGit ? '' : 'is-muted'}" title="${ws.isGit ? `Branch: ${ws.gitBranch || 'HEAD'}` : 'Não é repositório Git'}">
+                  ${icon('git-branch', 12)}
+                  <span>${escapeHtml(ws.isGit ? ws.gitBranch || 'HEAD' : 'Sem Git')}</span>
+                </span>
+                <span class="ws-meta-pill ${ws.hasHarness ? 'is-harness' : 'is-muted'}" title="${ws.hasHarness ? 'Harness configurado neste projeto' : 'Sem estrutura de Harness'}">
+                  ${icon(ws.hasHarness ? 'check-circle' : 'layers', 12)}
+                  <span>${ws.hasHarness ? 'Harness' : 'Sem Harness'}</span>
+                </span>
+                <span class="ws-meta-pill mono tabular" title="Tarefas em .specs/tasks">
+                  ${icon('columns', 12)}
+                  <span>${taskCount} ${taskCount === 1 ? 'tarefa' : 'tarefas'}</span>
+                </span>
+              </div>
+
+              <div class="ws-card-footer">
+                ${
+                  isActive
+                    ? `<span class="ws-current-label">${icon('check', 13)} Ambiente atual</span>
+                       <button type="button" class="btn btn-secondary btn-sm" data-nav-jump="kanban">Abrir Kanban</button>`
+                    : `<button
+                         type="button"
+                         class="btn btn-primary btn-sm ws-open-btn"
+                         data-action="select-workspace"
+                         data-ws-id="${escapeHtml(ws.id)}"
+                         ${switchingId ? 'disabled' : ''}
+                       >
+                         ${isSwitching ? `${icon('spinner', 13, 'spin')} Abrindo…` : `${icon('arrow-up-right', 13)} Abrir ambiente`}
+                       </button>`
+                }
+              </div>
+            </article>
+          `;
+        })
+        .join('')}
+    </div>
   `;
 }

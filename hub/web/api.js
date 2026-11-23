@@ -150,6 +150,14 @@ export const api = {
   promoteCalendarEvent(id, payload = { boardLane: 'scheduled' }) {
     return request(`/api/calendar/${encodeURIComponent(id)}/promote`, { method: 'POST', body: payload });
   },
+
+  getWorkspaces() {
+    return request('/api/workspaces');
+  },
+
+  selectWorkspace(id) {
+    return request('/api/workspaces/select', { method: 'POST', body: { id } });
+  },
 };
 
 const SSE_EVENTS = [
@@ -163,6 +171,7 @@ const SSE_EVENTS = [
   'gate:updated',
   'adapter:updated',
   'calendar:updated',
+  'workspace:changed',
   'watcher:error',
 ];
 

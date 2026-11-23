@@ -11,10 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { getAdaptersStatus, syncAdapters } from './lib/adapters.mjs';
 import { createCalendarStore, validateEventId } from './lib/calendar.mjs';
 import { fetchAssignedIssues, mapIssueToTaskInput } from './lib/github.mjs';
-import { createRunner } from './lib/runner.mjs';
 import { createSseHub } from './lib/sse.mjs';
 import { READ_ONLY_AGENTS, TYPES } from './lib/state-machine.mjs';
-import { createStore, StoreError, validateTaskId } from './lib/store.mjs';
+import { StoreError, validateTaskId } from './lib/store.mjs';
+import { createWorkspaceManager } from './lib/workspaces.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -185,6 +185,7 @@ function hasTraversalAttempt(rawUrlPath, decodedPath) {
  *
  * @param {{
  *   rootDir?: string,
+ *   workspacesDir?: string,
  *   port?: number,
  *   host?: string,
  *   webDir?: string,
@@ -197,6 +198,9 @@ function hasTraversalAttempt(rawUrlPath, decodedPath) {
  */
 export function createServer(options = {}) {
   const rootDir = resolve(options.rootDir || resolve(__dirname, '..'));
+  const workspacesDir = options.workspacesDir
+    ? resolve(options.workspacesDir)
+    : dirname(rootDir);
   const webDir = resolve(options.webDir || resolve(__dirname, 'web'));
   const requestedHost = options.host ?? ALLOWED_HOST;
   if (requestedHost !== ALLOWED_HOST) {
@@ -217,7 +221,7 @@ export function createServer(options = {}) {
   const githubFetchImpl = options.githubFetchImpl;
   const githubToken = options.githubToken;
 
-  const store = createStore(rootDir);
+  // Private Calendar stays anchored to primaryRootDir so personal/study/work events are shared across workspaces
   const calendar = createCalendarStore(rootDir);
   const sse = createSseHub({ heartbeatMs: options.heartbeatMs });
 
@@ -227,19 +231,15 @@ export function createServer(options = {}) {
   let boundPort = requestedPort;
   let started = false;
 
-  const runner = createRunner({
-    rootDir,
+  const workspaceManager = createWorkspaceManager({
+    primaryRootDir: rootDir,
+    workspacesDir,
     sse,
-    maxConcurrentRuns: store.readBoard().config.maxConcurrentRuns || 2,
-    lockManager: {
-      acquireLock: store.acquireLock,
-      releaseLock: store.releaseLock,
-    },
     mockStepDelayMs: options.mockStepDelayMs ?? 200,
-    onRunUpdate(run) {
+    onRunUpdate(run, ctx) {
       if (run.status === 'completed' || run.status === 'failed' || run.status === 'stopped') {
         try {
-          store.recordActivity({
+          ctx.store.recordActivity({
             actor: run.agent || 'system',
             engine: run.engine || null,
             type: `run_${run.status}`,
@@ -256,6 +256,7 @@ export function createServer(options = {}) {
         }
         sse.broadcast('state:changed', {
           reason: `run_${run.status}`,
+          workspaceId: ctx.id,
           taskId: run.taskId,
           runId: run.runId,
         });
@@ -263,17 +264,46 @@ export function createServer(options = {}) {
     },
   });
 
-  function getMergedConfig() {
-    const boardConfig = store.readBoard().config;
+  function attachWatcher(targetStore) {
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore close error
+      }
+      watcher = null;
+    }
+    watcherActive = false;
+    if (!started) return;
+    try {
+      watcher = targetStore.watch(
+        ({ reason }) => {
+          sse.broadcast('state:changed', { reason });
+        },
+        (err) => {
+          watcherActive = false;
+          sse.broadcast('watcher:error', {
+            message: err?.message || 'Erro no monitoramento de arquivos',
+          });
+        },
+      );
+      watcherActive = true;
+    } catch {
+      watcherActive = false;
+    }
+  }
+
+  function getMergedConfig(activeStore = workspaceManager.getActiveContext().store) {
+    const boardConfig = activeStore.readBoard().config;
     return {
       ...boardConfig,
       maxConcurrency: boardConfig.maxConcurrentRuns,
     };
   }
 
-  function attachActiveRuns(tasks) {
+  function attachActiveRuns(tasks, activeRunner = workspaceManager.getActiveContext().runner) {
     const runningByTask = new Map();
-    for (const run of runner.listRuns()) {
+    for (const run of activeRunner.listRuns()) {
       if (run.status === 'running') {
         runningByTask.set(run.taskId, run);
       }
@@ -284,29 +314,37 @@ export function createServer(options = {}) {
     }));
   }
 
-  function enrichTask(task) {
+  function enrichTask(task, activeRunner = workspaceManager.getActiveContext().runner) {
     if (!task) return null;
     const activeRun =
-      runner.listRuns().find((r) => r.taskId === task.id && r.status === 'running') || null;
+      activeRunner.listRuns().find((r) => r.taskId === task.id && r.status === 'running') || null;
     return { ...task, activeRun };
   }
 
   function buildFullState() {
-    store.cleanupStaleLocks();
-    const base = store.getState();
-    const tasks = attachActiveRuns(base.tasks);
-    const allRuns = runner.listRuns();
+    const ctx = workspaceManager.getActiveContext();
+    const { store: activeStore, runner: activeRunner, path: activePath } = ctx;
+    activeStore.cleanupStaleLocks();
+    const base = activeStore.getState();
+    const tasks = attachActiveRuns(base.tasks, activeRunner);
+    const allRuns = activeRunner.listRuns();
     const activeRuns = allRuns.filter((r) => r.status === 'running');
-    const adapters = getAdaptersStatus(rootDir, { skipCliCheck });
+    const adapters = getAdaptersStatus(activePath, { skipCliCheck });
     const config = {
       ...base.config,
       maxConcurrency: base.config.maxConcurrentRuns,
     };
+    const wsList = workspaceManager.listWorkspaces();
+    const activeWorkspace =
+      wsList.workspaces.find((w) => w.id === ctx.id) || workspaceManager.getActiveWorkspace();
 
     return {
       ok: true,
       watching: watcherActive,
       repoRoot: base.repoRoot,
+      workspace: activeWorkspace,
+      workspaces: wsList.workspaces,
+      workspacesDir: wsList.workspacesDir,
       config,
       tasks,
       queue: base.queue,
@@ -392,7 +430,7 @@ export function createServer(options = {}) {
         ...SECURITY_HEADERS,
         'Content-Type': mime,
         'Content-Length': stat.size,
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-store, max-age=0',
       });
       if (req.method === 'HEAD') {
         res.end();
@@ -457,11 +495,38 @@ export function createServer(options = {}) {
     }
 
     try {
+      // ---- Multi-Workspace Discovery & Switching ----
+      if (method === 'GET' && pathname === '/api/workspaces') {
+        sendJson(res, 200, { ok: true, ...workspaceManager.listWorkspaces() });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/workspaces/select') {
+        const body = await readJsonBody(req);
+        const { workspace, context } = workspaceManager.selectWorkspace(body.id);
+        attachWatcher(context.store);
+        const state = buildFullState();
+        sse.broadcast('workspace:changed', {
+          id: workspace.id,
+          name: workspace.name,
+          path: workspace.path,
+          workspace,
+        });
+        sse.broadcast('state:changed', {
+          reason: 'workspace_changed',
+          workspaceId: workspace.id,
+        });
+        sendJson(res, 200, { ok: true, activeWorkspace: workspace, state });
+        return;
+      }
+
       // ---- State & Queue ----
       if (method === 'GET' && pathname === '/api/state') {
         sendJson(res, 200, buildFullState());
         return;
       }
+
+      const { store, runner, path: activeRootDir } = workspaceManager.getActiveContext();
 
       if (method === 'GET' && pathname === '/api/queue') {
         store.cleanupStaleLocks();
@@ -874,14 +939,14 @@ export function createServer(options = {}) {
 
       // ---- Multi-AI Adapters ----
       if (method === 'GET' && pathname === '/api/adapters/status') {
-        const status = getAdaptersStatus(rootDir, { skipCliCheck });
+        const status = getAdaptersStatus(activeRootDir, { skipCliCheck });
         sendJson(res, 200, { ok: true, ...status });
         return;
       }
 
       if (method === 'POST' && pathname === '/api/adapters/sync') {
         const body = await readJsonBody(req);
-        const result = syncAdapters(rootDir, {
+        const result = syncAdapters(activeRootDir, {
           platforms: body.platforms,
           targets: body.targets,
           dryRun: Boolean(body.dryRun),
@@ -932,7 +997,7 @@ export function createServer(options = {}) {
         if (only && !GATE_NAME_RE.test(only)) {
           throw new StoreError('INVALID_GATE_NAME', `Nome de gate inválido: "${only}"`, 400);
         }
-        const gateScript = join(rootDir, 'scripts', 'gate.mjs');
+        const gateScript = join(activeRootDir, 'scripts', 'gate.mjs');
         if (!existsSync(gateScript)) {
           throw new StoreError(
             'GATE_SCRIPT_NOT_FOUND',
@@ -942,13 +1007,13 @@ export function createServer(options = {}) {
         }
 
         const timeoutSec = Math.min(Math.max(Number(body.timeout) || 300, 1), 300);
-        const args = [gateScript, '--root', rootDir];
+        const args = [gateScript, '--root', activeRootDir];
         if (only) args.push('--only', only);
 
         gateRunning = true;
         try {
           const execRes = await execFileAsync(process.execPath, args, {
-            cwd: rootDir,
+            cwd: activeRootDir,
             shell: false,
             timeout: timeoutSec * 1000,
             maxBuffer: 2 * 1024 * 1024,
@@ -1189,22 +1254,7 @@ export function createServer(options = {}) {
         const addr = server.address();
         boundPort = typeof addr === 'object' && addr ? addr.port : requestedPort;
 
-        try {
-          watcher = store.watch(
-            ({ reason }) => {
-              sse.broadcast('state:changed', { reason });
-            },
-            (err) => {
-              watcherActive = false;
-              sse.broadcast('watcher:error', {
-                message: err?.message || 'Erro no monitoramento de arquivos',
-              });
-            },
-          );
-          watcherActive = true;
-        } catch {
-          watcherActive = false;
-        }
+        attachWatcher(workspaceManager.getActiveContext().store);
 
         resolveStart({
           port: boundPort,
@@ -1230,7 +1280,7 @@ export function createServer(options = {}) {
         }
         watcher = null;
       }
-      runner.stopAll('Servidor encerrado');
+      workspaceManager.stopAll('Servidor encerrado');
       sse.closeAll();
 
       if (!started && !server.listening) {
@@ -1252,26 +1302,33 @@ export function createServer(options = {}) {
     get url() {
       return `http://${ALLOWED_HOST}:${boundPort}`;
     },
-    store,
+    get store() {
+      return workspaceManager.getActiveContext().store;
+    },
+    get runner() {
+      return workspaceManager.getActiveContext().runner;
+    },
     calendar,
-    runner,
+    workspaceManager,
     sse,
   };
 }
 
-// Allow direct execution: `node hub/server.mjs [--port 7331] [--root <path>]`
+// Allow direct execution: `node hub/server.mjs [--port 7331] [--root <path>] [--workspaces-dir <path>]`
 const isDirectRun =
   process.argv[1] && resolve(process.argv[1]) === resolve(__filename);
 
 if (isDirectRun) {
   let port;
   let rootDir;
+  let workspacesDir;
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' && argv[i + 1]) port = Number(argv[++i]);
     else if (argv[i] === '--root' && argv[i + 1]) rootDir = resolve(argv[++i]);
+    else if (argv[i] === '--workspaces-dir' && argv[i + 1]) workspacesDir = resolve(argv[++i]);
   }
-  const hub = createServer({ rootDir, port });
+  const hub = createServer({ rootDir, workspacesDir, port });
   const info = await hub.start();
   console.log(`Harness Hub rodando em ${info.url} (root: ${resolve(rootDir || resolve(__dirname, '..'))})`);
 
