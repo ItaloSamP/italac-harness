@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "config": {
+    "autoRunOnInProgress": true,
+    "maxConcurrentRuns": 2,
+    "defaultEngine": "mock",
+    "defaultMode": "impl",
+    "theme": "dark",
+    "boardViewMode": "dual"
+  },
+  "tasks": {},
+  "activity": []
+}
